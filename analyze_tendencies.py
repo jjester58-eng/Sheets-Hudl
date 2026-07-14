@@ -50,7 +50,17 @@ def load_sheet_as_df(spreadsheet, tab_name):
         print(f"Warning: tab '{tab_name}' not found. Skipping.")
         return pd.DataFrame()
 
-    records = ws.get_all_records()
+    print(f"Reading '{tab_name}': {ws.row_count} rows x {ws.col_count} cols")
+
+    try:
+        records = ws.get_all_records()
+    except gspread.exceptions.APIError as e:
+        print(f"APIError reading '{tab_name}': {e}")
+        raise
+    except Exception as e:
+        print(f"Unexpected error reading '{tab_name}': {type(e).__name__}: {e}")
+        raise
+
     df = pd.DataFrame(records)
 
     if df.empty:
