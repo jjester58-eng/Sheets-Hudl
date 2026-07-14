@@ -15,43 +15,57 @@ Column layout (both sheets, A:P):
   F: OFF FORM  G: OFF PLAY  H: PROTECTION I: PLAY TYPE J: GN/LS
   K: FRONT     L: STUNT     M: BLITZ     N: COV       O: STR/WK
   P: DEF NOTES
+
+This script talks to the Sheets API directly (no gspread) so that any
+error response -- JSON or not -- gets printed in full instead of crashing
+inside a library's own error-handling code.
 """
 
 import os
 import json
 import urllib.parse
-import gspread
 import pandas as pd
 from google.oauth2.service_account import Credentials
 from google.auth.transport.requests import AuthorizedSession
 
-SCOPES = [
-    "https://www.googleapis.com/auth/spreadsheets",
-    "https://www.googleapis.com/auth/drive.readonly",
-]
+SCOPES = ["https://www.googleapis.com/auth/spreadsheets"]
 
 SOURCE_SHEET_NAME = "ALL INFO SHEET"
 SCOUT_SHEET_NAME = "WEEKLY DATA"
 OUTPUT_SHEET_NAME = "DEF ANALYSIS"
 
-# How far apart live-game vs scout % has to be before we flag it as a "shift"
 FLAG_THRESHOLD_PCT = 15.0
 
+SHEETS_API = "https://sheets.googleapis.com/v4/spreadsheets"
 
-def get_credentials():
+
+def get_session():
     creds_json = os.environ["GOOGLE_CREDS"]
     creds_dict = json.loads(creds_json)
-    return Credentials.from_service_account_info(creds_dict, scopes=SCOPES)
+    creds = Credentials.from_service_account_info(creds_dict, scopes=SCOPES)
+    return AuthorizedSession(creds)
 
 
-def get_client(creds):
-    return gspread.authorize(creds)
+def quoted_range(tab_name):
+    """Sheet names with spaces must be single-quoted inside the A1 range."""
+    escaped = tab_name.replace("'", "''")
+    return urllib.parse.quote(f"'{escaped}'")
 
 
-def fetch_values_raw(session, spreadsheet_id, tab_name):
-    """Calls the Sheets API directly so we can see the real status/body on failure."""
-    encoded_tab = urllib.parse.quote(tab_name)
-    url = f"https://sheets.googleapis.com/v4/spreadsheets/{spreadsheet_id}/values/{encoded_tab}"
+def get_sheet_metadata(session, spreadsheet_id):
+    """Returns list of existing tab titles in the spreadsheet."""
+    url = f"{SHEETS_API}/{spreadsheet_id}"
+    resp = session.get(url)
+    print(f"[metadata] HTTP status: {resp.status_code}")
+    if resp.status_code != 200:
+        print(f"[metadata] Response body (first 1000 chars): {resp.text[:1000]}")
+        resp.raise_for_status()
+    data = resp.json()
+    return [s["properties"]["title"] for s in data.get("sheets", [])]
+
+
+def fetch_values(session, spreadsheet_id, tab_name):
+    url = f"{SHEETS_API}/{spreadsheet_id}/values/{quoted_range(tab_name)}"
     resp = session.get(url)
     print(f"[{tab_name}] HTTP status: {resp.status_code}")
     if resp.status_code != 200:
@@ -64,24 +78,20 @@ def fetch_values_raw(session, spreadsheet_id, tab_name):
 def values_to_df(values):
     if not values or len(values) < 1:
         return pd.DataFrame()
-
     header = values[0]
     rows = values[1:]
-    # pad short rows so every row matches the header length
     padded = [r + [""] * (len(header) - len(r)) for r in rows]
-    df = pd.DataFrame(padded, columns=header)
-    return df
+    return pd.DataFrame(padded, columns=header)
 
 
 def load_sheet_as_df(session, spreadsheet_id, tab_name):
     try:
-        values = fetch_values_raw(session, spreadsheet_id, tab_name)
+        values = fetch_values(session, spreadsheet_id, tab_name)
     except Exception as e:
         print(f"Failed to read '{tab_name}': {type(e).__name__}: {e}")
         return pd.DataFrame()
 
     print(f"'{tab_name}': {len(values)} rows fetched (including header)")
-
     df = values_to_df(values)
 
     if df.empty:
@@ -113,7 +123,6 @@ def dist_bucket(dist):
 def pct_table(df, group_cols, target_col):
     if df.empty or target_col not in df.columns:
         return pd.DataFrame()
-
     counts = df.groupby(group_cols + [target_col]).size().reset_index(name="count")
     totals = df.groupby(group_cols).size().reset_index(name="total")
     merged = counts.merge(totals, on=group_cols)
@@ -123,7 +132,6 @@ def pct_table(df, group_cols, target_col):
 
 def build_tendency_tables(df, label):
     tables = {}
-
     if df.empty:
         return tables
 
@@ -168,12 +176,33 @@ def build_comparison(live_df, scout_df):
     return merged[cols]
 
 
-def write_tables_to_sheet(spreadsheet, tables_in_order):
-    try:
-        ws = spreadsheet.worksheet(OUTPUT_SHEET_NAME)
-        ws.clear()
-    except gspread.exceptions.WorksheetNotFound:
-        ws = spreadsheet.add_worksheet(title=OUTPUT_SHEET_NAME, rows=500, cols=20)
+def ensure_output_tab_exists(session, spreadsheet_id, tab_name):
+    titles = get_sheet_metadata(session, spreadsheet_id)
+    if tab_name in titles:
+        return
+
+    print(f"Creating missing tab: {tab_name}")
+    url = f"{SHEETS_API}/{spreadsheet_id}:batchUpdate"
+    body = {"requests": [{"addSheet": {"properties": {"title": tab_name}}}]}
+    resp = session.post(url, json=body)
+    print(f"[create tab] HTTP status: {resp.status_code}")
+    if resp.status_code != 200:
+        print(f"[create tab] Response body (first 1000 chars): {resp.text[:1000]}")
+        resp.raise_for_status()
+
+
+def clear_output_tab(session, spreadsheet_id, tab_name):
+    url = f"{SHEETS_API}/{spreadsheet_id}/values/{quoted_range(tab_name)}:clear"
+    resp = session.post(url)
+    print(f"[clear {tab_name}] HTTP status: {resp.status_code}")
+    if resp.status_code != 200:
+        print(f"[clear {tab_name}] Response body (first 1000 chars): {resp.text[:1000]}")
+        resp.raise_for_status()
+
+
+def write_tables_to_sheet(session, spreadsheet_id, tables_in_order):
+    ensure_output_tab_exists(session, spreadsheet_id, OUTPUT_SHEET_NAME)
+    clear_output_tab(session, spreadsheet_id, OUTPUT_SHEET_NAME)
 
     rows = []
     for title, df in tables_in_order:
@@ -181,18 +210,25 @@ def write_tables_to_sheet(spreadsheet, tables_in_order):
         if df is None or df.empty:
             rows.append(["(no data)"])
         else:
-            rows.append(list(df.columns))
+            rows.append([str(c) for c in df.columns])
             for _, r in df.iterrows():
                 rows.append([str(v) for v in r.tolist()])
         rows.append([])
 
-    ws.update(rows, value_input_option="RAW")
+    url = f"{SHEETS_API}/{spreadsheet_id}/values/{quoted_range(OUTPUT_SHEET_NAME)}"
+    params = {"valueInputOption": "RAW"}
+    body = {"values": rows}
+    resp = session.put(url, params=params, json=body)
+    print(f"[write {OUTPUT_SHEET_NAME}] HTTP status: {resp.status_code}")
+    if resp.status_code != 200:
+        print(f"[write {OUTPUT_SHEET_NAME}] Response body (first 1000 chars): {resp.text[:1000]}")
+        resp.raise_for_status()
 
 
 def main():
     spreadsheet_id = os.environ["SPREADSHEET_ID"]
-    creds = get_credentials()
-    session = AuthorizedSession(creds)
+    print(f"Spreadsheet ID length: {len(spreadsheet_id)}")  # sanity check, no leak
+    session = get_session()
 
     live_df = load_sheet_as_df(session, spreadsheet_id, SOURCE_SHEET_NAME)
     scout_df = load_sheet_as_df(session, spreadsheet_id, SCOUT_SHEET_NAME)
@@ -204,15 +240,12 @@ def main():
     output = []
     output.append(("Live Game vs Scout - FRONT tendency comparison (flagged if diff >= "
                     f"{FLAG_THRESHOLD_PCT}%)", comparison))
-
     for title, df in live_tables.items():
         output.append((title, df))
     for title, df in scout_tables.items():
         output.append((title, df))
 
-    gc = get_client(creds)
-    spreadsheet = gc.open_by_key(spreadsheet_id)
-    write_tables_to_sheet(spreadsheet, output)
+    write_tables_to_sheet(session, spreadsheet_id, output)
     print("Done. Wrote results to:", OUTPUT_SHEET_NAME)
 
 
