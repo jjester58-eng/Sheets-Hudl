@@ -19,9 +19,11 @@ Column layout (both sheets, A:P):
 
 import os
 import json
+import urllib.parse
 import gspread
 import pandas as pd
 from google.oauth2.service_account import Credentials
+from google.auth.transport.requests import AuthorizedSession
 
 SCOPES = [
     "https://www.googleapis.com/auth/spreadsheets",
@@ -36,32 +38,51 @@ OUTPUT_SHEET_NAME = "DEF ANALYSIS"
 FLAG_THRESHOLD_PCT = 15.0
 
 
-def get_client():
+def get_credentials():
     creds_json = os.environ["GOOGLE_CREDS"]
     creds_dict = json.loads(creds_json)
-    creds = Credentials.from_service_account_info(creds_dict, scopes=SCOPES)
+    return Credentials.from_service_account_info(creds_dict, scopes=SCOPES)
+
+
+def get_client(creds):
     return gspread.authorize(creds)
 
 
-def load_sheet_as_df(spreadsheet, tab_name):
-    try:
-        ws = spreadsheet.worksheet(tab_name)
-    except gspread.exceptions.WorksheetNotFound:
-        print(f"Warning: tab '{tab_name}' not found. Skipping.")
+def fetch_values_raw(session, spreadsheet_id, tab_name):
+    """Calls the Sheets API directly so we can see the real status/body on failure."""
+    encoded_tab = urllib.parse.quote(tab_name)
+    url = f"https://sheets.googleapis.com/v4/spreadsheets/{spreadsheet_id}/values/{encoded_tab}"
+    resp = session.get(url)
+    print(f"[{tab_name}] HTTP status: {resp.status_code}")
+    if resp.status_code != 200:
+        print(f"[{tab_name}] Response body (first 1000 chars): {resp.text[:1000]}")
+        resp.raise_for_status()
+    data = resp.json()
+    return data.get("values", [])
+
+
+def values_to_df(values):
+    if not values or len(values) < 1:
         return pd.DataFrame()
 
-    print(f"Reading '{tab_name}': {ws.row_count} rows x {ws.col_count} cols")
+    header = values[0]
+    rows = values[1:]
+    # pad short rows so every row matches the header length
+    padded = [r + [""] * (len(header) - len(r)) for r in rows]
+    df = pd.DataFrame(padded, columns=header)
+    return df
 
+
+def load_sheet_as_df(session, spreadsheet_id, tab_name):
     try:
-        records = ws.get_all_records()
-    except gspread.exceptions.APIError as e:
-        print(f"APIError reading '{tab_name}': {e}")
-        raise
+        values = fetch_values_raw(session, spreadsheet_id, tab_name)
     except Exception as e:
-        print(f"Unexpected error reading '{tab_name}': {type(e).__name__}: {e}")
-        raise
+        print(f"Failed to read '{tab_name}': {type(e).__name__}: {e}")
+        return pd.DataFrame()
 
-    df = pd.DataFrame(records)
+    print(f"'{tab_name}': {len(values)} rows fetched (including header)")
+
+    df = values_to_df(values)
 
     if df.empty:
         return df
@@ -170,11 +191,11 @@ def write_tables_to_sheet(spreadsheet, tables_in_order):
 
 def main():
     spreadsheet_id = os.environ["SPREADSHEET_ID"]
-    gc = get_client()
-    spreadsheet = gc.open_by_key(spreadsheet_id)
+    creds = get_credentials()
+    session = AuthorizedSession(creds)
 
-    live_df = load_sheet_as_df(spreadsheet, SOURCE_SHEET_NAME)
-    scout_df = load_sheet_as_df(spreadsheet, SCOUT_SHEET_NAME)
+    live_df = load_sheet_as_df(session, spreadsheet_id, SOURCE_SHEET_NAME)
+    scout_df = load_sheet_as_df(session, spreadsheet_id, SCOUT_SHEET_NAME)
 
     live_tables = build_tendency_tables(live_df, "LIVE GAME")
     scout_tables = build_tendency_tables(scout_df, "SCOUT (3wk)")
@@ -189,6 +210,8 @@ def main():
     for title, df in scout_tables.items():
         output.append((title, df))
 
+    gc = get_client(creds)
+    spreadsheet = gc.open_by_key(spreadsheet_id)
     write_tables_to_sheet(spreadsheet, output)
     print("Done. Wrote results to:", OUTPUT_SHEET_NAME)
 
