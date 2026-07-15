@@ -6,9 +6,7 @@ Reads:
   - "WEEKLY DATA"      -> scouted opponent film (3+ weeks, upcoming opponent)
 
 Writes:
-  - "DEF ANALYSIS"     -> tendency tables + a Live Game vs Scout comparison,
-                          flagging any FRONT tendency by down/distance that
-                          differs by 15%+ between the two
+  - "DEF ANALYSIS"     -> a set of reports built from each dataset
 
 Column layout (both sheets, A:P):
   A: PLAY #    B: SERIES    C: DN        D: DIST      E: BACKFIELD
@@ -18,6 +16,15 @@ Column layout (both sheets, A:P):
 
 Uses gspread only. Validates both source tabs exist and have data before
 doing any analysis, and stops immediately with a clear message if not.
+
+Reports (built separately for LIVE GAME and SCOUT data):
+  - build_summary            overall counts, run/pass split, yards, big plays
+  - top_formations           formation usage ranked by frequency
+  - formation_breakdowns     play-type mix and efficiency within each formation
+  - down_distance_report     FRONT/BLITZ/COV/STUNT tendency by down & distance
+  - field_position_report    tendency by STR/WK (strength/weak side)
+  - explosive_report         plays at/above the explosive-play threshold
+  - coach_notes              plays that have a DEF NOTES entry
 """
 
 import os
@@ -36,8 +43,8 @@ SOURCE_SHEET_NAME = "ALL INFO SHEET"
 SCOUT_SHEET_NAME = "WEEKLY DATA"
 OUTPUT_SHEET_NAME = "DEF ANALYSIS"
 
-# How far apart Live Game vs Scout % has to be before we flag it as a "shift"
-FLAG_THRESHOLD_PCT = 15.0
+# Yards gained/lost at or above this counts as an "explosive" play
+EXPLOSIVE_THRESHOLD = 15
 
 
 # ---------------------------------------------------------------------------
@@ -133,12 +140,8 @@ def dist_bucket(dist):
     return "Long"
 
 
-# ---------------------------------------------------------------------------
-# Tendency calculations
-# ---------------------------------------------------------------------------
-
-def pct_table(df, group_cols, target_col):
-    """Returns count and % breakdown of target_col within each group_cols combo."""
+def pct_by_group(df, group_cols, target_col):
+    """Shared helper: count + % breakdown of target_col within each group_cols combo."""
     if df.empty or target_col not in df.columns:
         return pd.DataFrame()
 
@@ -149,54 +152,173 @@ def pct_table(df, group_cols, target_col):
     return merged
 
 
-def build_tendency_tables(df, label):
-    """Builds the core defensive-tendency breakdowns for one dataset
-    (either the live game or the scout film)."""
-    tables = {}
+# ---------------------------------------------------------------------------
+# Report builders - each takes one dataset (Live Game or Scout) and returns
+# either a single DataFrame or a dict of {title: DataFrame}
+# ---------------------------------------------------------------------------
+
+def build_summary(df):
+    """Overall snapshot: play count, run/pass split, total & average yards,
+    explosive play count, negative play count."""
     if df.empty:
+        return pd.DataFrame()
+
+    total_plays = len(df)
+    rows = [("Total Plays", total_plays)]
+
+    if "SERIES" in df.columns:
+        rows.append(("Total Series", df["SERIES"].nunique()))
+
+    if "PLAY TYPE" in df.columns:
+        type_counts = df["PLAY TYPE"].value_counts()
+        for play_type, count in type_counts.items():
+            pct = round(count / total_plays * 100, 1)
+            rows.append((f"{play_type} plays", f"{count} ({pct}%)"))
+
+    if "GN/LS" in df.columns:
+        rows.append(("Total Yards", round(df["GN/LS"].sum(), 1)))
+        rows.append(("Avg Yards / Play", round(df["GN/LS"].mean(), 1)))
+        rows.append(("Explosive Plays (>= {} yds)".format(EXPLOSIVE_THRESHOLD),
+                     int((df["GN/LS"] >= EXPLOSIVE_THRESHOLD).sum())))
+        rows.append(("Negative Plays", int((df["GN/LS"] < 0).sum())))
+
+    return pd.DataFrame(rows, columns=["Metric", "Value"])
+
+
+def top_formations(df):
+    """Ranks OFF FORM by how often it's used, with efficiency alongside."""
+    if df.empty or "OFF FORM" not in df.columns:
+        return pd.DataFrame()
+
+    total_plays = len(df)
+    counts = df["OFF FORM"].value_counts().reset_index()
+    counts.columns = ["OFF FORM", "count"]
+    counts["pct"] = (counts["count"] / total_plays * 100).round(1)
+
+    if "GN/LS" in df.columns:
+        avg_gain = df.groupby("OFF FORM")["GN/LS"].mean().round(1).reset_index()
+        avg_gain.columns = ["OFF FORM", "AVG GN/LS"]
+        counts = counts.merge(avg_gain, on="OFF FORM")
+
+    return counts.sort_values("count", ascending=False)
+
+
+def formation_breakdowns(df):
+    """For each formation: what play types come out of it, and how well
+    each one has worked."""
+    tables = {}
+    if df.empty or "OFF FORM" not in df.columns:
         return tables
 
-    tables[f"{label} - FRONT by DN/DIST"] = pct_table(df, ["DN", "DIST_BUCKET"], "FRONT")
-    tables[f"{label} - BLITZ by DN/DIST"] = pct_table(df, ["DN", "DIST_BUCKET"], "BLITZ")
-    tables[f"{label} - COVERAGE by DN/DIST"] = pct_table(df, ["DN", "DIST_BUCKET"], "COV")
-    tables[f"{label} - STUNT by DN/DIST"] = pct_table(df, ["DN", "DIST_BUCKET"], "STUNT")
-    tables[f"{label} - FRONT by FORMATION"] = pct_table(df, ["OFF FORM"], "FRONT")
-    tables[f"{label} - BLITZ by FORMATION"] = pct_table(df, ["OFF FORM"], "BLITZ")
+    tables["Play Type by Formation"] = pct_by_group(df, ["OFF FORM"], "PLAY TYPE")
 
-    if "GN/LS" in df.columns and "FRONT" in df.columns:
-        eff = df.groupby("FRONT")["GN/LS"].mean().round(1).reset_index()
-        eff.columns = ["FRONT", "AVG GN/LS"]
-        tables[f"{label} - Avg GN/LS by FRONT"] = eff
+    if "GN/LS" in df.columns and "PLAY TYPE" in df.columns:
+        eff = df.groupby(["OFF FORM", "PLAY TYPE"])["GN/LS"].mean().round(1).reset_index()
+        eff.columns = ["OFF FORM", "PLAY TYPE", "AVG GN/LS"]
+        tables["Efficiency by Formation & Play Type"] = eff
 
     return tables
 
 
-def build_comparison(live_df, scout_df):
-    """Compares Live Game vs Scout FRONT tendency by down/distance, flagging
-    any combination where usage % differs by FLAG_THRESHOLD_PCT or more."""
-    if live_df.empty or scout_df.empty:
-        return pd.DataFrame()
+def down_distance_report(df):
+    """FRONT / BLITZ / COVERAGE / STUNT tendency by down and distance bucket,
+    plus efficiency by FRONT."""
+    tables = {}
+    if df.empty:
+        return tables
 
-    live_pct = pct_table(live_df, ["DN", "DIST_BUCKET"], "FRONT")
-    scout_pct = pct_table(scout_df, ["DN", "DIST_BUCKET"], "FRONT")
+    tables["FRONT by DN/DIST"] = pct_by_group(df, ["DN", "DIST_BUCKET"], "FRONT")
+    tables["BLITZ by DN/DIST"] = pct_by_group(df, ["DN", "DIST_BUCKET"], "BLITZ")
+    tables["COVERAGE by DN/DIST"] = pct_by_group(df, ["DN", "DIST_BUCKET"], "COV")
+    tables["STUNT by DN/DIST"] = pct_by_group(df, ["DN", "DIST_BUCKET"], "STUNT")
 
-    if live_pct.empty or scout_pct.empty:
-        return pd.DataFrame()
+    if "GN/LS" in df.columns and "FRONT" in df.columns:
+        eff = df.groupby("FRONT")["GN/LS"].mean().round(1).reset_index()
+        eff.columns = ["FRONT", "AVG GN/LS"]
+        tables["Avg GN/LS by FRONT"] = eff
 
-    merged = live_pct.merge(
-        scout_pct,
-        on=["DN", "DIST_BUCKET", "FRONT"],
-        how="outer",
-        suffixes=(" (Live Game)", " (Scout)"),
+    return tables
+
+
+def field_position_report(df):
+    """Tendency by strength/weak side (STR/WK). Note: this sheet layout has
+    no explicit hash/field-position column, so STR/WK is used as the closest
+    available proxy for field-position-driven tendency."""
+    tables = {}
+    if df.empty or "STR/WK" not in df.columns:
+        return tables
+
+    tables["FRONT by STR/WK"] = pct_by_group(df, ["STR/WK"], "FRONT")
+    tables["BLITZ by STR/WK"] = pct_by_group(df, ["STR/WK"], "BLITZ")
+    tables["PLAY TYPE by STR/WK"] = pct_by_group(df, ["STR/WK"], "PLAY TYPE")
+
+    return tables
+
+
+def explosive_report(df):
+    """Lists individual explosive plays (>= EXPLOSIVE_THRESHOLD yards) and
+    summarizes what tends to produce them."""
+    tables = {}
+    if df.empty or "GN/LS" not in df.columns:
+        return tables
+
+    explosive = df[df["GN/LS"] >= EXPLOSIVE_THRESHOLD].copy()
+    if explosive.empty:
+        tables[f"Explosive Plays (>= {EXPLOSIVE_THRESHOLD} yds)"] = pd.DataFrame()
+        return tables
+
+    cols_wanted = ["PLAY #", "DN", "DIST", "OFF FORM", "PLAY TYPE", "GN/LS", "FRONT"]
+    cols_present = [c for c in cols_wanted if c in explosive.columns]
+    tables[f"Explosive Plays (>= {EXPLOSIVE_THRESHOLD} yds)"] = explosive[cols_present].sort_values(
+        "GN/LS", ascending=False
     )
-    merged["pct (Live Game)"] = merged["pct (Live Game)"].fillna(0)
-    merged["pct (Scout)"] = merged["pct (Scout)"].fillna(0)
-    merged["DIFF"] = (merged["pct (Live Game)"] - merged["pct (Scout)"]).round(1)
-    merged["FLAG"] = merged["DIFF"].abs() >= FLAG_THRESHOLD_PCT
-    merged = merged.sort_values("DIFF", key=abs, ascending=False)
 
-    cols = ["DN", "DIST_BUCKET", "FRONT", "pct (Live Game)", "pct (Scout)", "DIFF", "FLAG"]
-    return merged[cols]
+    if "OFF FORM" in explosive.columns:
+        tables["Explosive Plays by Formation"] = (
+            explosive["OFF FORM"].value_counts().reset_index()
+        )
+
+    return tables
+
+
+def coach_notes(df):
+    """Surfaces any play that already has a DEF NOTES entry, so notable
+    in-game observations are easy to find in one place."""
+    if df.empty or "DEF NOTES" not in df.columns:
+        return pd.DataFrame()
+
+    notes = df[df["DEF NOTES"].astype(str).str.strip() != ""].copy()
+    if notes.empty:
+        return pd.DataFrame()
+
+    cols_wanted = ["PLAY #", "DN", "DIST", "FRONT", "BLITZ", "COV", "DEF NOTES"]
+    cols_present = [c for c in cols_wanted if c in notes.columns]
+    return notes[cols_present]
+
+
+def build_all_reports(df, label):
+    """Runs every report builder against one dataset and returns a flat
+    {title: DataFrame} dict with the label prefixed on each title."""
+    tables = {}
+
+    tables[f"{label} - Summary"] = build_summary(df)
+    tables[f"{label} - Top Formations"] = top_formations(df)
+
+    for title, sub_df in formation_breakdowns(df).items():
+        tables[f"{label} - {title}"] = sub_df
+
+    for title, sub_df in down_distance_report(df).items():
+        tables[f"{label} - {title}"] = sub_df
+
+    for title, sub_df in field_position_report(df).items():
+        tables[f"{label} - {title}"] = sub_df
+
+    for title, sub_df in explosive_report(df).items():
+        tables[f"{label} - {title}"] = sub_df
+
+    tables[f"{label} - Coach Notes"] = coach_notes(df)
+
+    return tables
 
 
 # ---------------------------------------------------------------------------
@@ -241,16 +363,10 @@ def main():
     live_df = load_sheet_as_df(spreadsheet, SOURCE_SHEET_NAME)
     scout_df = load_sheet_as_df(spreadsheet, SCOUT_SHEET_NAME)
 
-    live_tables = build_tendency_tables(live_df, "LIVE GAME")
-    scout_tables = build_tendency_tables(scout_df, "SCOUT (3wk)")
-    comparison = build_comparison(live_df, scout_df)
+    live_tables = build_all_reports(live_df, "LIVE GAME")
+    scout_tables = build_all_reports(scout_df, "SCOUT (3wk)")
 
-    output = [
-        ("Live Game vs Scout - FRONT tendency comparison "
-         f"(flagged if diff >= {FLAG_THRESHOLD_PCT}%)", comparison)
-    ]
-    output += list(live_tables.items())
-    output += list(scout_tables.items())
+    output = list(live_tables.items()) + list(scout_tables.items())
 
     write_tables_to_sheet(spreadsheet, output)
     print("Done.")
