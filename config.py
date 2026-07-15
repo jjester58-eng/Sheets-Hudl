@@ -1,0 +1,22 @@
+SOURCE_SHEET = "ALL INFO SHEET"
+SCOUT_SHEET = "WEEKLY DATA"
+OUTPUT_SHEET = "DEF ANALYSIS"
+
+SHORT_DISTANCE = 3
+MEDIUM_DISTANCE = 7
+
+EXPLOSIVE_RUN = 10
+EXPLOSIVE_PASS = 15
+
+TOP_FORMATIONS = 3
+TOP_RUNS = 3
+TOP_PASSES = 3
+
+FIELD_ZONES = [
+    ("Own 1-20", -99, -21),
+    ("Own 21-50", -20, -1),
+    ("Midfield", 0, 0),
+    ("Opp 49-21", 1, 29),
+    ("Red Zone", 30, 39),
+    ("Goal Line", 40, 50),
+]
