@@ -6,13 +6,20 @@ Reads:
   - "WEEKLY DATA"      -> scouted opponent film (3+ weeks, upcoming opponent)
 
 Writes:
-  - "DEF ANALYSIS"     -> a set of reports built from each dataset
+  - "DEF ANALYSIS"     -> side-by-side offensive reports:
+                            Live Game in columns A:E
+                            Scout (3wk) in columns G:K
+                            (column F left blank as a visual gap)
 
 Column layout (both sheets, A:P):
   A: PLAY #    B: SERIES    C: DN        D: DIST      E: BACKFIELD
   F: OFF FORM  G: OFF PLAY  H: PROTECTION I: PLAY TYPE J: GN/LS
   K: FRONT     L: STUNT     M: BLITZ     N: COV       O: STR/WK
   P: DEF NOTES
+
+This version only looks at offensive tendencies (formation, play type,
+down/distance, explosive plays). FRONT, STUNT, BLITZ, COV, and STR/WK are
+not used.
 
 Uses gspread only. Validates both source tabs exist and have data before
 doing any analysis, and stops immediately with a clear message if not.
@@ -21,8 +28,7 @@ Reports (built separately for LIVE GAME and SCOUT data):
   - build_summary            overall counts, run/pass split, yards, big plays
   - top_formations           formation usage ranked by frequency
   - formation_breakdowns     play-type mix and efficiency within each formation
-  - down_distance_report     FRONT/BLITZ/COV/STUNT tendency by down & distance
-  - field_position_report    tendency by STR/WK (strength/weak side)
+  - down_distance_report     play-type tendency by down & distance
   - explosive_report         plays at/above the explosive-play threshold
   - coach_notes              plays that have a DEF NOTES entry
 """
@@ -45,6 +51,10 @@ OUTPUT_SHEET_NAME = "DEF ANALYSIS"
 
 # Yards gained/lost at or above this counts as an "explosive" play
 EXPLOSIVE_THRESHOLD = 15
+
+# Side-by-side layout: Live Game in A:E, gap at F, Scout in G:K
+LEFT_WIDTH = 5
+RIGHT_WIDTH = 5
 
 
 # ---------------------------------------------------------------------------
@@ -149,12 +159,13 @@ def pct_by_group(df, group_cols, target_col):
     totals = df.groupby(group_cols).size().reset_index(name="total")
     merged = counts.merge(totals, on=group_cols)
     merged["pct"] = (merged["count"] / merged["total"] * 100).round(1)
-    return merged
+    return merged.drop(columns=["total"])
 
 
 # ---------------------------------------------------------------------------
 # Report builders - each takes one dataset (Live Game or Scout) and returns
-# either a single DataFrame or a dict of {title: DataFrame}
+# either a single DataFrame or a dict of {title: DataFrame}.
+# All tables are kept to 5 columns or fewer to fit the side-by-side layout.
 # ---------------------------------------------------------------------------
 
 def build_summary(df):
@@ -178,7 +189,7 @@ def build_summary(df):
     if "GN/LS" in df.columns:
         rows.append(("Total Yards", round(df["GN/LS"].sum(), 1)))
         rows.append(("Avg Yards / Play", round(df["GN/LS"].mean(), 1)))
-        rows.append(("Explosive Plays (>= {} yds)".format(EXPLOSIVE_THRESHOLD),
+        rows.append((f"Explosive Plays (>= {EXPLOSIVE_THRESHOLD} yds)",
                      int((df["GN/LS"] >= EXPLOSIVE_THRESHOLD).sum())))
         rows.append(("Negative Plays", int((df["GN/LS"] < 0).sum())))
 
@@ -221,57 +232,36 @@ def formation_breakdowns(df):
 
 
 def down_distance_report(df):
-    """FRONT / BLITZ / COVERAGE / STUNT tendency by down and distance bucket,
-    plus efficiency by FRONT."""
-    tables = {}
-    if df.empty:
-        return tables
+    """Play-type tendency by down and distance bucket (offense only -
+    no defensive front/coverage data used)."""
+    if df.empty or "PLAY TYPE" not in df.columns:
+        return pd.DataFrame()
 
-    tables["FRONT by DN/DIST"] = pct_by_group(df, ["DN", "DIST_BUCKET"], "FRONT")
-    tables["BLITZ by DN/DIST"] = pct_by_group(df, ["DN", "DIST_BUCKET"], "BLITZ")
-    tables["COVERAGE by DN/DIST"] = pct_by_group(df, ["DN", "DIST_BUCKET"], "COV")
-    tables["STUNT by DN/DIST"] = pct_by_group(df, ["DN", "DIST_BUCKET"], "STUNT")
-
-    if "GN/LS" in df.columns and "FRONT" in df.columns:
-        eff = df.groupby("FRONT")["GN/LS"].mean().round(1).reset_index()
-        eff.columns = ["FRONT", "AVG GN/LS"]
-        tables["Avg GN/LS by FRONT"] = eff
-
-    return tables
-
-
-def field_position_report(df):
-    """Tendency by strength/weak side (STR/WK). Note: this sheet layout has
-    no explicit hash/field-position column, so STR/WK is used as the closest
-    available proxy for field-position-driven tendency."""
-    tables = {}
-    if df.empty or "STR/WK" not in df.columns:
-        return tables
-
-    tables["FRONT by STR/WK"] = pct_by_group(df, ["STR/WK"], "FRONT")
-    tables["BLITZ by STR/WK"] = pct_by_group(df, ["STR/WK"], "BLITZ")
-    tables["PLAY TYPE by STR/WK"] = pct_by_group(df, ["STR/WK"], "PLAY TYPE")
-
-    return tables
+    return pct_by_group(df, ["DN", "DIST_BUCKET"], "PLAY TYPE")
 
 
 def explosive_report(df):
     """Lists individual explosive plays (>= EXPLOSIVE_THRESHOLD yards) and
-    summarizes what tends to produce them."""
+    summarizes which formation tends to produce them."""
     tables = {}
     if df.empty or "GN/LS" not in df.columns:
         return tables
 
     explosive = df[df["GN/LS"] >= EXPLOSIVE_THRESHOLD].copy()
+    title = f"Explosive Plays (>= {EXPLOSIVE_THRESHOLD} yds)"
+
     if explosive.empty:
-        tables[f"Explosive Plays (>= {EXPLOSIVE_THRESHOLD} yds)"] = pd.DataFrame()
+        tables[title] = pd.DataFrame()
         return tables
 
-    cols_wanted = ["PLAY #", "DN", "DIST", "OFF FORM", "PLAY TYPE", "GN/LS", "FRONT"]
+    if "DN" in explosive.columns and "DIST" in explosive.columns:
+        explosive["SITUATION"] = (
+            explosive["DN"].astype("Int64").astype(str) + " & " + explosive["DIST"].astype("Int64").astype(str)
+        )
+
+    cols_wanted = ["PLAY #", "SITUATION", "OFF FORM", "PLAY TYPE", "GN/LS"]
     cols_present = [c for c in cols_wanted if c in explosive.columns]
-    tables[f"Explosive Plays (>= {EXPLOSIVE_THRESHOLD} yds)"] = explosive[cols_present].sort_values(
-        "GN/LS", ascending=False
-    )
+    tables[title] = explosive[cols_present].sort_values("GN/LS", ascending=False)
 
     if "OFF FORM" in explosive.columns:
         tables["Explosive Plays by Formation"] = (
@@ -291,51 +281,39 @@ def coach_notes(df):
     if notes.empty:
         return pd.DataFrame()
 
-    cols_wanted = ["PLAY #", "DN", "DIST", "FRONT", "BLITZ", "COV", "DEF NOTES"]
+    cols_wanted = ["PLAY #", "DN", "DIST", "DEF NOTES"]
     cols_present = [c for c in cols_wanted if c in notes.columns]
     return notes[cols_present]
 
 
-def build_all_reports(df, label):
-    """Runs every report builder against one dataset and returns a flat
-    {title: DataFrame} dict with the label prefixed on each title."""
-    tables = {}
+def build_all_reports(df):
+    """Runs every report builder against one dataset and returns an ordered
+    list of (title, DataFrame) tuples, ready to stack into a column block."""
+    tables = []
 
-    tables[f"{label} - Summary"] = build_summary(df)
-    tables[f"{label} - Top Formations"] = top_formations(df)
+    tables.append(("Summary", build_summary(df)))
+    tables.append(("Top Formations", top_formations(df)))
 
     for title, sub_df in formation_breakdowns(df).items():
-        tables[f"{label} - {title}"] = sub_df
+        tables.append((title, sub_df))
 
-    for title, sub_df in down_distance_report(df).items():
-        tables[f"{label} - {title}"] = sub_df
-
-    for title, sub_df in field_position_report(df).items():
-        tables[f"{label} - {title}"] = sub_df
+    tables.append(("Play Type by Down/Distance", down_distance_report(df)))
 
     for title, sub_df in explosive_report(df).items():
-        tables[f"{label} - {title}"] = sub_df
+        tables.append((title, sub_df))
 
-    tables[f"{label} - Coach Notes"] = coach_notes(df)
+    tables.append(("Coach Notes", coach_notes(df)))
 
     return tables
 
 
 # ---------------------------------------------------------------------------
-# Writing results
+# Writing results - side by side layout
 # ---------------------------------------------------------------------------
 
-def write_tables_to_sheet(spreadsheet, tables_in_order):
-    """Clears (or creates) DEF ANALYSIS and writes each (title, dataframe)
-    pair stacked vertically with a blank row between tables."""
-    try:
-        ws = spreadsheet.worksheet(OUTPUT_SHEET_NAME)
-        ws.clear()
-        print(f"Cleared existing '{OUTPUT_SHEET_NAME}' tab")
-    except gspread.exceptions.WorksheetNotFound:
-        ws = spreadsheet.add_worksheet(title=OUTPUT_SHEET_NAME, rows=1000, cols=20)
-        print(f"Created new '{OUTPUT_SHEET_NAME}' tab")
-
+def build_column_block(tables_in_order, width):
+    """Stacks (title, df) pairs into a list of rows, each row padded/truncated
+    to exactly `width` columns."""
     rows = []
     for title, df in tables_in_order:
         rows.append([title])
@@ -347,8 +325,43 @@ def write_tables_to_sheet(spreadsheet, tables_in_order):
                 rows.append([str(v) for v in r.tolist()])
         rows.append([])
 
-    ws.update(rows, value_input_option="RAW")
-    print(f"Wrote {len(rows)} rows to '{OUTPUT_SHEET_NAME}'")
+    padded = [(row + [""] * width)[:width] for row in rows]
+    return padded
+
+
+def combine_side_by_side(left_rows, right_rows):
+    """Merges two column blocks into one grid: left block, one blank gap
+    column, then right block."""
+    max_len = max(len(left_rows), len(right_rows))
+    grid = []
+    for i in range(max_len):
+        left = left_rows[i] if i < len(left_rows) else [""] * LEFT_WIDTH
+        right = right_rows[i] if i < len(right_rows) else [""] * RIGHT_WIDTH
+        grid.append(left + [""] + right)
+    return grid
+
+
+def write_side_by_side(spreadsheet, live_tables, scout_tables):
+    """Clears (or creates) DEF ANALYSIS and writes Live Game in A:E and
+    Scout in G:K, with column F left blank as a visual gap."""
+    try:
+        ws = spreadsheet.worksheet(OUTPUT_SHEET_NAME)
+        ws.clear()
+        print(f"Cleared existing '{OUTPUT_SHEET_NAME}' tab")
+    except gspread.exceptions.WorksheetNotFound:
+        ws = spreadsheet.add_worksheet(title=OUTPUT_SHEET_NAME, rows=1000, cols=20)
+        print(f"Created new '{OUTPUT_SHEET_NAME}' tab")
+
+    left_rows = [["LIVE GAME"]] + [[""] * LEFT_WIDTH] + build_column_block(live_tables, LEFT_WIDTH)
+    right_rows = [["SCOUT (3wk)"]] + [[""] * RIGHT_WIDTH] + build_column_block(scout_tables, RIGHT_WIDTH)
+
+    left_rows = [(row + [""] * LEFT_WIDTH)[:LEFT_WIDTH] for row in left_rows]
+    right_rows = [(row + [""] * RIGHT_WIDTH)[:RIGHT_WIDTH] for row in right_rows]
+
+    grid = combine_side_by_side(left_rows, right_rows)
+
+    ws.update(range_name="A1", values=grid, value_input_option="RAW")
+    print(f"Wrote {len(grid)} rows to '{OUTPUT_SHEET_NAME}' (Live Game A:E, Scout G:K)")
 
 
 # ---------------------------------------------------------------------------
@@ -363,12 +376,10 @@ def main():
     live_df = load_sheet_as_df(spreadsheet, SOURCE_SHEET_NAME)
     scout_df = load_sheet_as_df(spreadsheet, SCOUT_SHEET_NAME)
 
-    live_tables = build_all_reports(live_df, "LIVE GAME")
-    scout_tables = build_all_reports(scout_df, "SCOUT (3wk)")
+    live_tables = build_all_reports(live_df)
+    scout_tables = build_all_reports(scout_df)
 
-    output = list(live_tables.items()) + list(scout_tables.items())
-
-    write_tables_to_sheet(spreadsheet, output)
+    write_side_by_side(spreadsheet, live_tables, scout_tables)
     print("Done.")
 
 
