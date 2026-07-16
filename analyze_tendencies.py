@@ -52,6 +52,9 @@ OUTPUT_SHEET_NAME = "DEF ANALYSIS"
 # Yards gained/lost at or above this counts as an "explosive" play
 EXPLOSIVE_THRESHOLD = 15
 
+# How far apart Live vs Scout % has to be before we flag it as a tendency shift
+FLAG_THRESHOLD_PCT = 15.0
+
 # Side-by-side layout: Live Game in A:E, gap at F, Scout in G:K
 LEFT_WIDTH = 5
 RIGHT_WIDTH = 5
@@ -307,6 +310,69 @@ def build_all_reports(df):
     return tables
 
 
+def compare_situational_tendency(live_df, scout_df, group_cols, target_col):
+    """Compares % usage of target_col within each group_cols combo between
+    Live Game and Scout data, flagging differences >= FLAG_THRESHOLD_PCT."""
+    live_pct = pct_by_group(live_df, group_cols, target_col)
+    scout_pct = pct_by_group(scout_df, group_cols, target_col)
+
+    if live_pct.empty or scout_pct.empty:
+        return pd.DataFrame()
+
+    merged = live_pct.merge(
+        scout_pct,
+        on=group_cols + [target_col],
+        how="outer",
+        suffixes=(" (Live)", " (Scout)"),
+    )
+    merged["pct (Live)"] = merged["pct (Live)"].fillna(0)
+    merged["pct (Scout)"] = merged["pct (Scout)"].fillna(0)
+    merged["DIFF"] = (merged["pct (Live)"] - merged["pct (Scout)"]).round(1)
+    merged["FLAG"] = merged["DIFF"].abs() >= FLAG_THRESHOLD_PCT
+    merged = merged.sort_values("DIFF", key=abs, ascending=False)
+
+    cols = group_cols + [target_col, "pct (Live)", "pct (Scout)", "DIFF", "FLAG"]
+    return merged[cols]
+
+
+def compare_formation_usage(live_df, scout_df):
+    """Compares overall formation usage % between Live Game and Scout data,
+    flagging differences >= FLAG_THRESHOLD_PCT. Handled separately from
+    compare_situational_tendency since it isn't grouped by a situation."""
+    if live_df.empty or scout_df.empty or "OFF FORM" not in live_df.columns:
+        return pd.DataFrame()
+
+    live_total = len(live_df)
+    scout_total = len(scout_df)
+    live_counts = live_df["OFF FORM"].value_counts()
+    scout_counts = scout_df["OFF FORM"].value_counts()
+    all_forms = sorted(set(live_counts.index) | set(scout_counts.index))
+
+    rows = []
+    for form in all_forms:
+        live_pct = round(live_counts.get(form, 0) / live_total * 100, 1) if live_total else 0.0
+        scout_pct = round(scout_counts.get(form, 0) / scout_total * 100, 1) if scout_total else 0.0
+        diff = round(live_pct - scout_pct, 1)
+        rows.append((form, live_pct, scout_pct, diff, abs(diff) >= FLAG_THRESHOLD_PCT))
+
+    out = pd.DataFrame(rows, columns=["OFF FORM", "pct (Live)", "pct (Scout)", "DIFF", "FLAG"])
+    return out.sort_values("DIFF", key=abs, ascending=False)
+
+
+def build_comparison_tables(live_df, scout_df):
+    """Returns the ordered list of (title, df) comparison tables that go
+    in the full-width section below the two side-by-side blocks."""
+    tables = []
+
+    play_type_cmp = compare_situational_tendency(live_df, scout_df, ["DN", "DIST_BUCKET"], "PLAY TYPE")
+    tables.append((f"Play Type Tendency: Live vs Scout (flag if diff >= {FLAG_THRESHOLD_PCT}%)", play_type_cmp))
+
+    formation_cmp = compare_formation_usage(live_df, scout_df)
+    tables.append((f"Formation Usage: Live vs Scout (flag if diff >= {FLAG_THRESHOLD_PCT}%)", formation_cmp))
+
+    return tables
+
+
 # ---------------------------------------------------------------------------
 # Writing results - side by side layout
 # ---------------------------------------------------------------------------
@@ -341,9 +407,10 @@ def combine_side_by_side(left_rows, right_rows):
     return grid
 
 
-def write_side_by_side(spreadsheet, live_tables, scout_tables):
+def write_side_by_side(spreadsheet, live_tables, scout_tables, comparison_tables):
     """Clears (or creates) DEF ANALYSIS and writes Live Game in A:E and
-    Scout in G:K, with column F left blank as a visual gap."""
+    Scout in G:K, with column F left blank as a visual gap. A full-width
+    comparison section is appended below both blocks."""
     try:
         ws = spreadsheet.worksheet(OUTPUT_SHEET_NAME)
         ws.clear()
@@ -359,9 +426,18 @@ def write_side_by_side(spreadsheet, live_tables, scout_tables):
     right_rows = [(row + [""] * RIGHT_WIDTH)[:RIGHT_WIDTH] for row in right_rows]
 
     grid = combine_side_by_side(left_rows, right_rows)
+    full_width = LEFT_WIDTH + 1 + RIGHT_WIDTH  # match total sheet width used above
 
-    ws.update(range_name="A1", values=grid, value_input_option="RAW")
-    print(f"Wrote {len(grid)} rows to '{OUTPUT_SHEET_NAME}' (Live Game A:E, Scout G:K)")
+    comparison_header = [["TENDENCY COMPARISON (LIVE vs SCOUT)"]] + [[""] * full_width]
+    comparison_block = build_column_block(comparison_tables, full_width)
+    comparison_rows = [(row + [""] * full_width)[:full_width] for row in comparison_header + comparison_block]
+
+    gap_row = [[""] * full_width]
+    full_grid = grid + gap_row + comparison_rows
+
+    ws.update(range_name="A1", values=full_grid, value_input_option="RAW")
+    print(f"Wrote {len(full_grid)} rows to '{OUTPUT_SHEET_NAME}' "
+          f"(Live Game A:E, Scout G:K, comparison below)")
 
 
 # ---------------------------------------------------------------------------
@@ -378,8 +454,9 @@ def main():
 
     live_tables = build_all_reports(live_df)
     scout_tables = build_all_reports(scout_df)
+    comparison_tables = build_comparison_tables(live_df, scout_df)
 
-    write_side_by_side(spreadsheet, live_tables, scout_tables)
+    write_side_by_side(spreadsheet, live_tables, scout_tables, comparison_tables)
     print("Done.")
 
 
