@@ -142,17 +142,54 @@ LOW_USAGE_ALERT_MAX_LIVE_COUNT: int = 1
 # Minimum usage jump (percentage points) to call out a "new tendency"
 NEW_TENDENCY_USAGE_JUMP_PCT: float = 15.0
 
-# Minimum sample size before a situation is trusted enough to appear in the
-# "What To Expect" predictive section
+# ---------------------------------------------------------------------------
+# Confidence
+# ---------------------------------------------------------------------------
+# A tendency drawn from a tiny sample is meaningless ("3rd & Long: PASS 100%,
+# 2 plays" tells a coach nothing). Any live situation with fewer than this
+# many plays is tagged LOW CONFIDENCE rather than reported as fact, and the
+# Expected Call engine will not assert that a tendency "changed" off a sample
+# this small.
+MIN_CONFIDENCE_SAMPLE: int = 5
+
+# Minimum sample size before a scout situation is trusted enough to feed the
+# Expected Call / expected-plays engine.
 MIN_SAMPLE_FOR_EXPECTATION: int = 5
 
-# How many "What To Expect" items to show (one each from Formation,
-# Down & Distance, Field Position - keeps the section to a glance)
-TOP_N_EXPECTATIONS: int = 3
+# How many ranked plays the Expected Call engine lists per situation
+# (e.g. "1. Counter 38%  2. Power 29%  3. Zone 18%").
+EXPECTED_CALL_TOP_N: int = 3
 
 # Swing (percentage points) big enough to generate a Down & Distance or
 # Field Position "running/passing much more than expected" alert
 SITUATION_CHANGE_ALERT_PCT: float = 20.0
+
+# ---------------------------------------------------------------------------
+# Status / verdict labels (comparison-first wording used across the report)
+# ---------------------------------------------------------------------------
+STATUS_SAME: str = "Same tendency"
+STATUS_MORE_PASS: str = "Passing more than expected"
+STATUS_MORE_RUN: str = "Running more than expected"
+STATUS_USING_MORE: str = "Using much more"
+STATUS_USING_LESS: str = "Using much less"
+STATUS_FLIPPED: str = "Completely different tendency"
+STATUS_NEW: str = "New look"
+STATUS_LOW_CONFIDENCE: str = "Low confidence"
+
+# ---------------------------------------------------------------------------
+# Biggest Changes section
+# ---------------------------------------------------------------------------
+# How many risers and fallers to surface in the "Biggest Changes" section.
+BIGGEST_CHANGES_TOP_N: int = 4
+
+# ---------------------------------------------------------------------------
+# Game Plan Match visual bar
+# ---------------------------------------------------------------------------
+# The match score is drawn as a text bar (e.g. "████████░░ 82%") so it reads
+# at a glance in a spreadsheet cell.
+GAME_PLAN_BAR_SEGMENTS: int = 10
+GAME_PLAN_BAR_FILLED_CHAR: str = "\u2588"   # full block
+GAME_PLAN_BAR_EMPTY_CHAR: str = "\u2591"    # light shade
 
 # Game Plan Match Score - component weights (must sum to 1.0)
 GAME_PLAN_WEIGHT_FORMATION: float = 0.40
