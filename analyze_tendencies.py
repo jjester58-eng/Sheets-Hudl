@@ -6,8 +6,8 @@ function, and writes the report. No football math (that's analysis.py)
 and no report formatting (that's reports.py) - if you're tempted to add
 either kind of logic here, it belongs in one of those modules instead.
 
-Answers: "Given the formation, down, distance, and field position, what
-is the offense most likely to run - and are they still doing it tonight?"
+Answers, comparison-first: "Are they doing what we scouted, or have they
+changed - and if they line up here again, what should we expect?"
 """
 
 import config
@@ -24,64 +24,68 @@ def main() -> None:
     scout_df = analysis.add_situational_columns(sheets.load_sheet_as_df(spreadsheet, config.SCOUT_SHEET_NAME))
     live_df = analysis.add_situational_columns(sheets.load_sheet_as_df(spreadsheet, config.SOURCE_SHEET_NAME))
 
-    # --- Scout Report (static) ---
+    # --- Headline numbers for each side (building blocks) ---
     scout_summary = analysis.build_summary(scout_df)
-    scout_formations = analysis.build_top_formations(scout_df)
+    live_summary = analysis.build_summary(live_df)
     scout_top_runs = analysis.build_top_plays(scout_df, config.PLAY_TYPE_RUN)
     scout_top_passes = analysis.build_top_plays(scout_df, config.PLAY_TYPE_PASS)
-    scout_buckets = analysis.build_down_distance_buckets(scout_df)
-    scout_field_available = analysis.has_field_position_data(scout_df)
-    scout_zones = analysis.build_field_zone_report(scout_df)
-    scout_explosive = analysis.build_explosive_report(scout_df)
-
-    # --- Live Report (same shape, live data) ---
-    live_summary = analysis.build_summary(live_df)
-    live_formations = analysis.build_top_formations(live_df)
     live_top_runs = analysis.build_top_plays(live_df, config.PLAY_TYPE_RUN)
     live_top_passes = analysis.build_top_plays(live_df, config.PLAY_TYPE_PASS)
-    live_buckets = analysis.build_down_distance_buckets(live_df)
-    live_field_available = analysis.has_field_position_data(live_df)
-    live_zones = analysis.build_field_zone_report(live_df)
-    live_explosive = analysis.build_explosive_report(live_df)
 
-    # --- What To Expect (predictive, from scout data) ---
-    what_to_expect = analysis.build_what_to_expect(scout_formations, scout_buckets, scout_zones)
+    # --- 1. Overall Identity (scout vs live) ---
+    identity = analysis.build_identity_comparison(scout_summary, live_summary)
 
-    # --- Live Adjustments (scout vs live comparisons) ---
-    formation_changes = analysis.compare_formations(scout_df, live_df)
-    top_3_formation_names = [f.formation for f in scout_formations]
-    formation_deep_dives = analysis.build_formation_deep_dive(scout_df, live_df, top_3_formation_names)
-    run_changes = analysis.compare_plays(scout_df, live_df, config.PLAY_TYPE_RUN)
-    pass_changes = analysis.compare_plays(scout_df, live_df, config.PLAY_TYPE_PASS)
-    down_distance_comparisons = analysis.compare_down_distance(scout_buckets, live_buckets)
-    field_zone_comparisons = analysis.compare_field_zones(scout_zones, live_zones)
+    # --- 4. Top Formations (comparison, per formation) ---
+    formation_comparisons = analysis.build_formation_comparisons(scout_df, live_df)
 
-    coach_alerts = analysis.build_coach_alerts(
-        formation_changes, run_changes, pass_changes, scout_summary, live_summary,
-        down_distance_comparisons, field_zone_comparisons,
+    # --- 5. Formation Tendencies (the scout "book") ---
+    formation_tendencies = analysis.build_top_formations(scout_df, top_n=config.TOP_N_FORMATIONS * 2)
+
+    # --- 6 & 7. Down & Distance / Field Position + Expected Call engine ---
+    down_distance_expectations = analysis.build_down_distance_expectations(scout_df, live_df)
+    field_zone_expectations = analysis.build_field_zone_expectations(scout_df, live_df)
+    field_position_available = (
+        analysis.has_field_position_data(scout_df) or analysis.has_field_position_data(live_df)
     )
 
+    # --- 8. Explosive Plays (comparison) ---
+    explosive = analysis.build_explosive_comparison(scout_df, live_df)
+
+    # --- Raw movers (feed Biggest Changes, Coach Alerts, Game Plan Match) ---
+    formation_changes = analysis.compare_formations(scout_df, live_df)
+    run_changes = analysis.compare_plays(scout_df, live_df, config.PLAY_TYPE_RUN)
+    pass_changes = analysis.compare_plays(scout_df, live_df, config.PLAY_TYPE_PASS)
+
+    # --- 3. Biggest Changes ---
+    biggest_changes = analysis.build_biggest_changes(formation_changes, run_changes, pass_changes)
+
+    # --- 9. Coach Alerts ---
+    coach_alerts = analysis.build_coach_alerts(
+        identity, formation_comparisons, formation_changes,
+        run_changes, pass_changes,
+        down_distance_expectations, field_zone_expectations,
+    )
+
+    # --- 2. Game Plan Match ---
+    live_ready = live_summary.total_plays >= config.MIN_LIVE_PLAYS_FOR_COMPARISON
     game_plan_score = analysis.compute_game_plan_score(
         formation_changes, scout_summary, live_summary,
         scout_top_runs, scout_top_passes, live_top_runs, live_top_passes,
-        down_distance_comparisons,
-    )
+        down_distance_expectations,
+    ) if live_ready else None
 
     report_rows = reports.build_full_report(
-        what_to_expect=what_to_expect,
-        scout_summary=scout_summary, scout_formations=scout_formations,
-        scout_top_runs=scout_top_runs, scout_top_passes=scout_top_passes,
-        scout_buckets=scout_buckets, scout_zones=scout_zones,
-        scout_field_available=scout_field_available, scout_explosive=scout_explosive,
-        live_summary=live_summary, live_formations=live_formations,
-        live_top_runs=live_top_runs, live_top_passes=live_top_passes,
-        live_buckets=live_buckets, live_zones=live_zones,
-        live_field_available=live_field_available, live_explosive=live_explosive,
-        formation_changes=formation_changes, formation_deep_dives=formation_deep_dives,
-        run_changes=run_changes, pass_changes=pass_changes,
-        down_distance_comparisons=down_distance_comparisons,
-        field_zone_comparisons=field_zone_comparisons,
-        coach_alerts=coach_alerts, game_plan_score=game_plan_score,
+        identity=identity,
+        game_plan_score=game_plan_score,
+        biggest_changes=biggest_changes,
+        formation_comparisons=formation_comparisons,
+        formation_tendencies=formation_tendencies,
+        down_distance_expectations=down_distance_expectations,
+        field_zone_expectations=field_zone_expectations,
+        field_position_available=field_position_available,
+        explosive=explosive,
+        coach_alerts=coach_alerts,
+        live_ready=live_ready,
     )
 
     sheets.write_report(spreadsheet, report_rows)

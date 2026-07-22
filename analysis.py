@@ -43,6 +43,16 @@ class PlayCallStat:
 
 
 @dataclass
+class PlayProbability:
+    """One play's likelihood inside a slice of plays - the atom the Expected
+    Call engine is built from. `pct` is the play's share among the plays it
+    was ranked within (e.g. share of all runs on 1st & Long)."""
+    play_name: str
+    pct: float
+    count: int
+
+
+@dataclass
 class FormationSummary:
     """Section 2: one formation's usage rate and its go-to plays."""
     formation: str
@@ -51,20 +61,6 @@ class FormationSummary:
     pass_pct: float
     top_run_plays: List[str]
     top_pass_plays: List[str]
-
-
-@dataclass
-class SituationBucket:
-    """Shared shape for Section 5 (down & distance) and Section 6 (field
-    position) - both are 'in this situation, what do they like to run'."""
-    label: str
-    run_pct: float
-    pass_pct: float
-    top_run_plays: List[str]
-    top_pass_plays: List[str]
-    play_count: int
-    top_overall_play: Optional[str] = None
-    top_overall_play_pct: float = 0.0
 
 
 # ---------------------------------------------------------------------------
@@ -213,21 +209,41 @@ def _play_call_stats(df: pd.DataFrame, play_type: str) -> List[PlayCallStat]:
     return sorted(stats, key=lambda s: s.calls, reverse=True)
 
 
-def _top_overall_play(df: pd.DataFrame) -> tuple:
-    """Returns (play_name, pct_share) for the single most-called play in a
-    slice, regardless of run or pass. Used for 'this situation becomes
-    {play} football' style notes. Returns (None, 0.0) if there's no usable
-    play-call data."""
+def _play_probabilities(df: pd.DataFrame, play_type: Optional[str], top_n: int) -> List[PlayProbability]:
+    """Ranks play calls by frequency and returns each one's probability
+    (share of the slice), most-likely first. This is what powers the
+    'Most likely: 1. Counter 38%  2. Power 29%' Expected Call lines.
+
+    If `play_type` is given, plays are ranked and shared *within* that type
+    (share of all runs, or all passes); if None, within the whole slice.
+    """
     if df.empty or config.COL_PLAY_CALL not in df.columns:
-        return None, 0.0
+        return []
 
-    counts = df[config.COL_PLAY_CALL].value_counts()
-    if counts.empty:
-        return None, 0.0
+    subset = df
+    if play_type is not None:
+        if config.COL_PLAY_TYPE not in df.columns:
+            return []
+        subset = df[df[config.COL_PLAY_TYPE] == play_type]
 
-    top_play = counts.index[0]
-    pct_share = round(counts.iloc[0] / len(df) * 100, 1)
-    return top_play, pct_share
+    total = len(subset)
+    if total == 0:
+        return []
+
+    counts = subset[config.COL_PLAY_CALL].value_counts()
+    return [
+        PlayProbability(
+            play_name=name,
+            pct=round(count / total * 100, 1),
+            count=int(count),
+        )
+        for name, count in counts.head(top_n).items()
+    ]
+
+
+def is_confident(play_count: int) -> bool:
+    """Whether a slice has enough plays to trust a tendency drawn from it."""
+    return play_count >= config.MIN_CONFIDENCE_SAMPLE
 
 
 # ---------------------------------------------------------------------------
@@ -299,76 +315,7 @@ def build_top_plays(df: pd.DataFrame, play_type: str, top_n: int = config.TOP_N_
 
 
 # ---------------------------------------------------------------------------
-# Section 5: Down & Distance
-# ---------------------------------------------------------------------------
-
-def build_down_distance_buckets(df: pd.DataFrame) -> List[SituationBucket]:
-    """One SituationBucket per down/distance combo (1st/2nd/3rd x
-    Short/Medium/Long), in a fixed, predictable order. Buckets with no
-    plays are skipped rather than shown empty."""
-    if df.empty or "DOWN_DISTANCE_LABEL" not in df.columns:
-        return []
-
-    buckets = []
-    for down in config.DOWNS_TRACKED:
-        for dist_bucket in ("Short", "Medium", "Long"):
-            label = _down_distance_label(down, dist_bucket)
-            subset = df[df["DOWN_DISTANCE_LABEL"] == label]
-            if subset.empty:
-                continue
-
-            run_pct, pass_pct = _run_pass_split(subset)
-            top_play, top_play_pct = _top_overall_play(subset)
-            buckets.append(SituationBucket(
-                label=label,
-                run_pct=run_pct,
-                pass_pct=pass_pct,
-                top_run_plays=_top_play_calls(subset, config.PLAY_TYPE_RUN, config.TOP_N_PLAYS),
-                top_pass_plays=_top_play_calls(subset, config.PLAY_TYPE_PASS, config.TOP_N_PLAYS),
-                play_count=len(subset),
-                top_overall_play=top_play,
-                top_overall_play_pct=top_play_pct,
-            ))
-
-    return buckets
-
-
-# ---------------------------------------------------------------------------
-# Section 6: Field Position
-# ---------------------------------------------------------------------------
-
-def build_field_zone_report(df: pd.DataFrame) -> List[SituationBucket]:
-    """One SituationBucket per field zone. Returns an empty list if the
-    dataset has no usable field position column - callers should check
-    has_field_position_data() first to decide whether to show the section
-    at all."""
-    if not has_field_position_data(df):
-        return []
-
-    buckets = []
-    for zone_name, _low, _high in config.FIELD_ZONES:
-        subset = df[df["FIELD_ZONE"] == zone_name]
-        if subset.empty:
-            continue
-
-        run_pct, pass_pct = _run_pass_split(subset)
-        top_play, top_play_pct = _top_overall_play(subset)
-        buckets.append(SituationBucket(
-            label=zone_name,
-            run_pct=run_pct,
-            pass_pct=pass_pct,
-            top_run_plays=_top_play_calls(subset, config.PLAY_TYPE_RUN, config.TOP_N_PLAYS),
-            top_pass_plays=_top_play_calls(subset, config.PLAY_TYPE_PASS, config.TOP_N_PLAYS),
-            play_count=len(subset),
-            top_overall_play=top_play,
-            top_overall_play_pct=top_play_pct,
-        ))
-
-    return buckets
-
-
-# ---------------------------------------------------------------------------
-# Section 7: Explosive Plays
+# Explosive Plays (per dataset - the raw material for the comparison table)
 # ---------------------------------------------------------------------------
 
 def build_explosive_report(df: pd.DataFrame, top_n: int = config.TOP_N_PLAYS) -> dict:
@@ -392,15 +339,57 @@ def build_explosive_report(df: pd.DataFrame, top_n: int = config.TOP_N_PLAYS) ->
 
 
 # ---------------------------------------------------------------------------
-# Section 8: Coach Notes (dynamic bullet points)
+# --- Everything below this line is COMPARISON-FIRST. Each structure       --
+# --- answers the same four questions for one slice of the game:           --
+# ---   1. What did scout say?                                             --
+# ---   2. What are they doing tonight (live)?                            --
+# ---   3. Did they change?                                               --
+# ---   4. If they line up here again, what should we expect?             --
 # ---------------------------------------------------------------------------
 
+
 # ---------------------------------------------------------------------------
-# --- Everything below this line supports the LIVE vs SCOUT comparison  -----
-# --- half of the report: formation/play changes, situational shifts,   -----
-# --- the Game Plan Match Score, Coach Alerts, and What To Expect.      -----
+# Section 1: Overall Identity (scout vs live headline)
 # ---------------------------------------------------------------------------
 
+@dataclass
+class IdentityComparison:
+    """Section 1: the one-glance 'who are they, and have they changed' line."""
+    scout_plays: int
+    live_plays: int
+    scout_run_pct: float
+    scout_pass_pct: float
+    live_run_pct: float
+    live_pass_pct: float
+    run_pct_change: float
+    pass_pct_change: float
+    scout_explosive_run: int
+    scout_explosive_pass: int
+    live_explosive_run: int
+    live_explosive_pass: int
+
+
+def build_identity_comparison(scout: Summary, live: Summary) -> IdentityComparison:
+    """Folds the scout and live Summaries into one side-by-side identity."""
+    return IdentityComparison(
+        scout_plays=scout.total_plays,
+        live_plays=live.total_plays,
+        scout_run_pct=scout.run_pct,
+        scout_pass_pct=scout.pass_pct,
+        live_run_pct=live.run_pct,
+        live_pass_pct=live.pass_pct,
+        run_pct_change=round(live.run_pct - scout.run_pct, 1),
+        pass_pct_change=round(live.pass_pct - scout.pass_pct, 1),
+        scout_explosive_run=scout.explosive_run_count,
+        scout_explosive_pass=scout.explosive_pass_count,
+        live_explosive_run=live.explosive_run_count,
+        live_explosive_pass=live.explosive_pass_count,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Raw usage movers (feed Biggest Changes, Coach Alerts, Game Plan Match)
+# ---------------------------------------------------------------------------
 
 @dataclass
 class FormationChange:
@@ -423,63 +412,6 @@ class PlayChange:
     change: float
     is_new: bool
 
-
-@dataclass
-class FormationDeepDive:
-    """Full scout-vs-live comparison for a single formation: run/pass split,
-    each side's top plays, and anything new or significantly different."""
-    formation: str
-    scout_run_pct: float
-    scout_pass_pct: float
-    live_run_pct: float
-    live_pass_pct: float
-    scout_top_runs: List[str]
-    scout_top_passes: List[str]
-    live_top_runs: List[str]
-    live_top_passes: List[str]
-    new_plays: List[str]        # called live in this formation, never on scout film
-    run_pct_change: float
-    pass_pct_change: float
-
-
-@dataclass
-class SituationComparison:
-    """Scout-vs-live comparison for one Down & Distance or Field Position
-    bucket. Only built for buckets with real data on both sides."""
-    label: str
-    scout_run_pct: float
-    scout_pass_pct: float
-    live_run_pct: float
-    live_pass_pct: float
-    pass_pct_change: float
-    alert_text: Optional[str]
-
-
-@dataclass
-class ExpectationItem:
-    """One line of the 'What To Expect' predictive section - a single
-    high-confidence situation and what's likely to be called."""
-    category: str          # "Formation" / "Down & Distance" / "Field Position"
-    label: str
-    dominant_type: str     # "Pass" or "Run"
-    dominant_pct: float
-    likely_plays: List[str]
-
-
-@dataclass
-class GamePlanScore:
-    """The overall Game Plan Match Score and its components."""
-    score: float
-    band_label: str
-    formation_component: float
-    runpass_component: float
-    top_plays_component: float
-    down_distance_component: float
-
-
-# ---------------------------------------------------------------------------
-# Formation & play usage changes
-# ---------------------------------------------------------------------------
 
 def compare_formations(scout_df: pd.DataFrame, live_df: pd.DataFrame) -> List[FormationChange]:
     """Compares formation usage % between scout and live, sorted by the
@@ -548,235 +480,371 @@ def compare_plays(scout_df: pd.DataFrame, live_df: pd.DataFrame, play_type: str)
 
 
 # ---------------------------------------------------------------------------
-# Formation deep-dive (Scout vs Live, for each of the top 3 formations)
+# Section 2: Top Formations (scout vs live, per formation, with a status)
 # ---------------------------------------------------------------------------
 
-def build_formation_deep_dive(
+@dataclass
+class FormationComparison:
+    """Section 2: one formation, scout vs live - usage, run/pass tendency,
+    go-to plays on each side, and a plain status. Answers 'are they lining up
+    here as much, and doing the same things out of it?'"""
+    formation: str
+    scout_pct: float
+    live_pct: float
+    change: float
+    is_new: bool
+    scout_count: int
+    live_count: int
+    scout_run_pct: float
+    scout_pass_pct: float
+    live_run_pct: float
+    live_pass_pct: float
+    pass_pct_change: float
+    scout_top_runs: List[str]
+    scout_top_passes: List[str]
+    live_top_runs: List[str]
+    live_top_passes: List[str]
+    new_plays: List[str]        # called live out of this formation, never on film
+    status: str
+    confident: bool
+
+
+def _formation_status(scout_count: int, live_count: int, change: float, is_new: bool) -> str:
+    """Plain one-liner for a formation's usage: same / more / less / new,
+    guarded by confidence so a 2-snap sample never reads as a real trend."""
+    if live_count == 0:
+        return "Not seen live yet"
+    if not is_confident(live_count):
+        return f"{config.STATUS_LOW_CONFIDENCE} ({live_count} live)"
+    if is_new:
+        return config.STATUS_NEW
+    if change >= config.ALERT_FORMATION_CHANGE_PCT:
+        return config.STATUS_USING_MORE
+    if change <= -config.ALERT_FORMATION_CHANGE_PCT:
+        return config.STATUS_USING_LESS
+    return config.STATUS_SAME
+
+
+def build_formation_comparisons(
     scout_df: pd.DataFrame,
     live_df: pd.DataFrame,
-    formations_to_compare: List[str],
-) -> List[FormationDeepDive]:
-    """For each formation named in formations_to_compare (normally the
-    scout's top 3), builds a full scout-vs-live comparison: run/pass split,
-    each side's top plays, and any plays that are brand new."""
-    results = []
+    top_n: int = config.TOP_N_FORMATIONS,
+) -> List[FormationComparison]:
+    """Builds a scout-vs-live comparison for the formations that matter most
+    (highest usage on either side), each with its run/pass tendency, go-to
+    plays, anything brand new, and a status."""
+    have_scout = config.COL_FORMATION in scout_df.columns and not scout_df.empty
+    have_live = config.COL_FORMATION in live_df.columns and not live_df.empty
+    if not have_scout and not have_live:
+        return []
 
-    for formation in formations_to_compare:
-        scout_subset = (
-            scout_df[scout_df[config.COL_FORMATION] == formation]
-            if config.COL_FORMATION in scout_df.columns else pd.DataFrame()
-        )
-        live_subset = (
-            live_df[live_df[config.COL_FORMATION] == formation]
-            if config.COL_FORMATION in live_df.columns else pd.DataFrame()
-        )
+    scout_total = len(scout_df)
+    live_total = len(live_df)
+    scout_counts = scout_df[config.COL_FORMATION].value_counts() if have_scout else pd.Series(dtype=int)
+    live_counts = live_df[config.COL_FORMATION].value_counts() if have_live else pd.Series(dtype=int)
+
+    comparisons = []
+    for formation in set(scout_counts.index) | set(live_counts.index):
+        scout_count = int(scout_counts.get(formation, 0))
+        live_count = int(live_counts.get(formation, 0))
+        scout_pct = round(scout_count / scout_total * 100, 1) if scout_total else 0.0
+        live_pct = round(live_count / live_total * 100, 1) if live_total else 0.0
+
+        scout_subset = scout_df[scout_df[config.COL_FORMATION] == formation] if have_scout else pd.DataFrame()
+        live_subset = live_df[live_df[config.COL_FORMATION] == formation] if have_live else pd.DataFrame()
 
         scout_run_pct, scout_pass_pct = _run_pass_split(scout_subset)
         live_run_pct, live_pass_pct = _run_pass_split(live_subset)
 
         scout_plays = set(scout_subset[config.COL_PLAY_CALL]) if config.COL_PLAY_CALL in scout_subset.columns else set()
         live_plays = set(live_subset[config.COL_PLAY_CALL]) if config.COL_PLAY_CALL in live_subset.columns else set()
-        new_plays = sorted(live_plays - scout_plays)
 
-        results.append(FormationDeepDive(
+        change = round(live_pct - scout_pct, 1)
+        is_new = scout_count == 0 and live_count > 0
+
+        comparisons.append(FormationComparison(
             formation=formation,
+            scout_pct=scout_pct,
+            live_pct=live_pct,
+            change=change,
+            is_new=is_new,
+            scout_count=scout_count,
+            live_count=live_count,
             scout_run_pct=scout_run_pct,
             scout_pass_pct=scout_pass_pct,
             live_run_pct=live_run_pct,
             live_pass_pct=live_pass_pct,
+            pass_pct_change=round(live_pass_pct - scout_pass_pct, 1),
             scout_top_runs=_top_play_calls(scout_subset, config.PLAY_TYPE_RUN, config.TOP_N_PLAYS),
             scout_top_passes=_top_play_calls(scout_subset, config.PLAY_TYPE_PASS, config.TOP_N_PLAYS),
             live_top_runs=_top_play_calls(live_subset, config.PLAY_TYPE_RUN, config.TOP_N_PLAYS),
             live_top_passes=_top_play_calls(live_subset, config.PLAY_TYPE_PASS, config.TOP_N_PLAYS),
-            new_plays=new_plays,
-            run_pct_change=round(live_run_pct - scout_run_pct, 1),
-            pass_pct_change=round(live_pass_pct - scout_pass_pct, 1),
+            new_plays=sorted(live_plays - scout_plays),
+            status=_formation_status(scout_count, live_count, change, is_new),
+            confident=is_confident(live_count),
         ))
 
+    comparisons.sort(key=lambda c: max(c.scout_pct, c.live_pct), reverse=True)
+    return comparisons[:top_n]
+
+
+# ---------------------------------------------------------------------------
+# Sections 4 & 5: Down & Distance / Field Position + the Expected Call engine
+# ---------------------------------------------------------------------------
+
+@dataclass
+class SituationExpectation:
+    """One situation (a down/distance bucket or a field zone), fully answered:
+    what scout expected, what's happening live, whether it changed, and the
+    ranked Expected Call for if they line up here again."""
+    label: str
+    scout_run_pct: float
+    scout_pass_pct: float
+    live_run_pct: float
+    live_pass_pct: float
+    scout_dominant_type: str        # "Run" / "Pass"
+    scout_dominant_pct: float
+    live_dominant_type: str
+    live_dominant_pct: float
+    scout_expected_plays: List[PlayProbability]   # ranked within the dominant type
+    live_top_plays: List[PlayProbability]
+    scout_count: int
+    live_count: int
+    pass_pct_change: float
+    verdict: str
+    changed: bool
+    scout_confident: bool
+    live_confident: bool
+
+
+def _dominant(run_pct: float, pass_pct: float) -> tuple:
+    """Returns ('Pass', pass_pct) or ('Run', run_pct) - ties go to Pass since
+    a balanced-to-passing look is the one a defense worries about more."""
+    if pass_pct >= run_pct:
+        return "Pass", pass_pct
+    return "Run", run_pct
+
+
+def _play_type_of(dominant_type: str) -> str:
+    return config.PLAY_TYPE_PASS if dominant_type == "Pass" else config.PLAY_TYPE_RUN
+
+
+def _situation_verdict(
+    scout_dom: str, live_dom: str, pass_change: float,
+    live_confident: bool, live_count: int,
+) -> tuple:
+    """Returns (verdict_text, changed) for a situation - the core 'did they
+    change?' judgement, refusing to assert change off a tiny live sample."""
+    if live_count == 0:
+        return "Not seen live yet", False
+    if not live_confident:
+        return f"{config.STATUS_LOW_CONFIDENCE} ({live_count} live)", False
+    if scout_dom != live_dom:
+        return config.STATUS_FLIPPED, True
+    if pass_change >= config.SITUATION_CHANGE_ALERT_PCT:
+        return config.STATUS_MORE_PASS, True
+    if pass_change <= -config.SITUATION_CHANGE_ALERT_PCT:
+        return config.STATUS_MORE_RUN, True
+    return config.STATUS_SAME, False
+
+
+def _situation_expectation(label: str, scout_subset: pd.DataFrame, live_subset: pd.DataFrame) -> SituationExpectation:
+    scout_run_pct, scout_pass_pct = _run_pass_split(scout_subset)
+    live_run_pct, live_pass_pct = _run_pass_split(live_subset)
+    scout_count = len(scout_subset)
+    live_count = len(live_subset)
+
+    scout_dom, scout_dom_pct = _dominant(scout_run_pct, scout_pass_pct)
+    live_dom, live_dom_pct = _dominant(live_run_pct, live_pass_pct)
+
+    scout_confident = scout_count >= config.MIN_SAMPLE_FOR_EXPECTATION
+    live_confident = is_confident(live_count)
+
+    pass_change = round(live_pass_pct - scout_pass_pct, 1)
+    verdict, changed = _situation_verdict(scout_dom, live_dom, pass_change, live_confident, live_count)
+
+    return SituationExpectation(
+        label=label,
+        scout_run_pct=scout_run_pct,
+        scout_pass_pct=scout_pass_pct,
+        live_run_pct=live_run_pct,
+        live_pass_pct=live_pass_pct,
+        scout_dominant_type=scout_dom,
+        scout_dominant_pct=scout_dom_pct,
+        live_dominant_type=live_dom,
+        live_dominant_pct=live_dom_pct,
+        scout_expected_plays=_play_probabilities(scout_subset, _play_type_of(scout_dom), config.EXPECTED_CALL_TOP_N),
+        live_top_plays=_play_probabilities(live_subset, _play_type_of(live_dom), config.EXPECTED_CALL_TOP_N),
+        scout_count=scout_count,
+        live_count=live_count,
+        pass_pct_change=pass_change,
+        verdict=verdict,
+        changed=changed,
+        scout_confident=scout_confident,
+        live_confident=live_confident,
+    )
+
+
+def _build_situation_expectations(
+    scout_df: pd.DataFrame, live_df: pd.DataFrame,
+    label_col: str, ordered_labels: List[str],
+) -> List[SituationExpectation]:
+    """Shared engine for Down & Distance and Field Position: for every label
+    that has plays on either side, builds a full SituationExpectation."""
+    results = []
+    for label in ordered_labels:
+        scout_subset = scout_df[scout_df[label_col] == label] if label_col in scout_df.columns else pd.DataFrame()
+        live_subset = live_df[live_df[label_col] == label] if label_col in live_df.columns else pd.DataFrame()
+        if scout_subset.empty and live_subset.empty:
+            continue
+        results.append(_situation_expectation(label, scout_subset, live_subset))
     return results
 
 
-# ---------------------------------------------------------------------------
-# Down & Distance / Field Position changes
-# ---------------------------------------------------------------------------
-
-def _compare_situation_buckets(
-    scout_buckets: List[SituationBucket],
-    live_buckets: List[SituationBucket],
-) -> List[SituationComparison]:
-    """Shared logic for comparing Down & Distance buckets or Field Position
-    zones between scout and live. Only produces a comparison for labels
-    present (with data) on both sides - a bucket that hasn't happened yet
-    tonight isn't a meaningful comparison.
-    """
-    scout_by_label = {b.label: b for b in scout_buckets}
-    live_by_label = {b.label: b for b in live_buckets}
-
-    shared_labels = [label for label in scout_by_label if label in live_by_label]
-
-    comparisons = []
-    for label in shared_labels:
-        scout_b = scout_by_label[label]
-        live_b = live_by_label[label]
-
-        pass_change = round(live_b.pass_pct - scout_b.pass_pct, 1)
-        run_change = round(live_b.run_pct - scout_b.run_pct, 1)
-
-        alert_text = None
-        if run_change >= config.SITUATION_CHANGE_ALERT_PCT:
-            alert_text = f"Running much more than expected on {label}."
-        elif pass_change >= config.SITUATION_CHANGE_ALERT_PCT:
-            alert_text = f"Passing much more than expected on {label}."
-
-        comparisons.append(SituationComparison(
-            label=label,
-            scout_run_pct=scout_b.run_pct,
-            scout_pass_pct=scout_b.pass_pct,
-            live_run_pct=live_b.run_pct,
-            live_pass_pct=live_b.pass_pct,
-            pass_pct_change=pass_change,
-            alert_text=alert_text,
-        ))
-
-    return comparisons
+def _down_distance_labels() -> List[str]:
+    return [
+        _down_distance_label(down, dist_bucket)
+        for down in config.DOWNS_TRACKED
+        for dist_bucket in ("Short", "Medium", "Long")
+    ]
 
 
-def compare_down_distance(
-    scout_buckets: List[SituationBucket],
-    live_buckets: List[SituationBucket],
-) -> List[SituationComparison]:
-    """Down & Distance version of the scout-vs-live situational comparison."""
-    return _compare_situation_buckets(scout_buckets, live_buckets)
+def build_down_distance_expectations(scout_df: pd.DataFrame, live_df: pd.DataFrame) -> List[SituationExpectation]:
+    """Down & Distance version of the Expected Call engine."""
+    return _build_situation_expectations(scout_df, live_df, "DOWN_DISTANCE_LABEL", _down_distance_labels())
 
 
-def compare_field_zones(
-    scout_zones: List[SituationBucket],
-    live_zones: List[SituationBucket],
-) -> List[SituationComparison]:
-    """Field Position version of the scout-vs-live situational comparison."""
-    return _compare_situation_buckets(scout_zones, live_zones)
+def build_field_zone_expectations(scout_df: pd.DataFrame, live_df: pd.DataFrame) -> List[SituationExpectation]:
+    """Field Position version of the Expected Call engine. Empty if neither
+    dataset has usable field position data."""
+    if not (has_field_position_data(scout_df) or has_field_position_data(live_df)):
+        return []
+    labels = [zone_name for zone_name, _low, _high in config.FIELD_ZONES]
+    return _build_situation_expectations(scout_df, live_df, "FIELD_ZONE", labels)
 
 
 # ---------------------------------------------------------------------------
-# What To Expect (predictive summary)
+# Section 6: Explosive Plays (scout vs live, one small table)
 # ---------------------------------------------------------------------------
 
-def build_what_to_expect(
-    formations: List[FormationSummary],
-    down_distance_buckets: List[SituationBucket],
-    field_zones: List[SituationBucket],
-) -> List[ExpectationItem]:
-    """Picks the single most lopsided (highest-confidence) situation from
-    each category - formation, down & distance, field position - and turns
-    it into a plain prediction. This is the 'first thing a coordinator
-    reads between series' section, so it stays to one item per category.
-    """
-    items: List[ExpectationItem] = []
+@dataclass
+class ExplosiveComparison:
+    """One play's explosive-gain count, scout vs live."""
+    play_name: str
+    play_type: str      # "Run" / "Pass"
+    scout_count: int
+    live_count: int
 
-    def _most_lopsided(candidates, get_run_pct, get_pass_pct, get_count, get_label):
-        best = None
-        best_margin = -1.0
-        for c in candidates:
-            if get_count(c) < config.MIN_SAMPLE_FOR_EXPECTATION:
-                continue
-            margin = max(get_run_pct(c), get_pass_pct(c))
-            if margin > best_margin:
-                best_margin = margin
-                best = c
-        return best
 
-    # Formation - use usage_pct-weighted play count isn't tracked directly on
-    # FormationSummary, so we treat every top formation as eligible (they're
-    # already the highest-usage formations, so sample size is rarely an issue).
-    best_formation = None
-    best_formation_margin = -1.0
-    for f in formations:
-        margin = max(f.run_pct, f.pass_pct)
-        if margin > best_formation_margin:
-            best_formation_margin = margin
-            best_formation = f
+def build_explosive_comparison(
+    scout_df: pd.DataFrame, live_df: pd.DataFrame,
+    top_n: int = config.TOP_N_PLAYS,
+) -> List[ExplosiveComparison]:
+    """The plays that produce explosive gains, scout vs live, in one table.
+    A play appears if it went explosive on either side; ranked by its bigger
+    of the two counts so the current game's threats surface."""
+    scout_ex = build_explosive_report(scout_df, top_n=10 ** 6)
+    live_ex = build_explosive_report(live_df, top_n=10 ** 6)
 
-    if best_formation:
-        dominant_type = "Pass" if best_formation.pass_pct >= best_formation.run_pct else "Run"
-        dominant_pct = best_formation.pass_pct if dominant_type == "Pass" else best_formation.run_pct
-        likely = best_formation.top_pass_plays if dominant_type == "Pass" else best_formation.top_run_plays
-        items.append(ExpectationItem(
-            category="Formation",
-            label=best_formation.formation,
-            dominant_type=dominant_type,
-            dominant_pct=dominant_pct,
-            likely_plays=likely,
-        ))
+    rows: List[ExplosiveComparison] = []
+    for play_type, key in ((config.PLAY_TYPE_RUN, "runs"), (config.PLAY_TYPE_PASS, "passes")):
+        scout_map = {s.play_name: s.explosive_count for s in scout_ex[key]}
+        live_map = {s.play_name: s.explosive_count for s in live_ex[key]}
+        for name in set(scout_map) | set(live_map):
+            rows.append(ExplosiveComparison(
+                play_name=name,
+                play_type=play_type,
+                scout_count=scout_map.get(name, 0),
+                live_count=live_map.get(name, 0),
+            ))
 
-    # Down & Distance
-    best_bucket = _most_lopsided(
-        down_distance_buckets,
-        lambda b: b.run_pct, lambda b: b.pass_pct, lambda b: b.play_count, lambda b: b.label,
-    )
-    if best_bucket:
-        dominant_type = "Pass" if best_bucket.pass_pct >= best_bucket.run_pct else "Run"
-        dominant_pct = best_bucket.pass_pct if dominant_type == "Pass" else best_bucket.run_pct
-        likely = best_bucket.top_pass_plays if dominant_type == "Pass" else best_bucket.top_run_plays
-        items.append(ExpectationItem(
-            category="Down & Distance",
-            label=best_bucket.label,
-            dominant_type=dominant_type,
-            dominant_pct=dominant_pct,
-            likely_plays=likely,
-        ))
-
-    # Field Position
-    best_zone = _most_lopsided(
-        field_zones,
-        lambda z: z.run_pct, lambda z: z.pass_pct, lambda z: z.play_count, lambda z: z.label,
-    )
-    if best_zone:
-        dominant_type = "Pass" if best_zone.pass_pct >= best_zone.run_pct else "Run"
-        dominant_pct = best_zone.pass_pct if dominant_type == "Pass" else best_zone.run_pct
-        likely = best_zone.top_pass_plays if dominant_type == "Pass" else best_zone.top_run_plays
-        items.append(ExpectationItem(
-            category="Field Position",
-            label=best_zone.label,
-            dominant_type=dominant_type,
-            dominant_pct=dominant_pct,
-            likely_plays=likely,
-        ))
-
-    return items
+    rows.sort(key=lambda r: max(r.scout_count, r.live_count), reverse=True)
+    return rows[: top_n * 2]
 
 
 # ---------------------------------------------------------------------------
-# Coach Alerts (dynamic, plain-English observations)
+# Section 3: Biggest Changes (the section a coordinator reads first)
 # ---------------------------------------------------------------------------
 
-def build_coach_alerts(
+@dataclass
+class BiggestChanges:
+    """The handful of things that actually moved: usage risers/fallers among
+    formations and plays, plus anything brand new."""
+    formation_movers: List[FormationChange]
+    play_movers: List[PlayChange]
+    new_plays: List[str]
+    new_formations: List[str]
+
+
+def build_biggest_changes(
     formation_changes: List[FormationChange],
     run_changes: List[PlayChange],
     pass_changes: List[PlayChange],
-    scout_summary: Summary,
-    live_summary: Summary,
-    down_distance_comparisons: List[SituationComparison],
-    field_zone_comparisons: List[SituationComparison],
+    top_n: int = config.BIGGEST_CHANGES_TOP_N,
+) -> BiggestChanges:
+    """Distills the raw change lists down to the biggest confident movers and
+    the brand-new looks - nothing small or noisy."""
+    def movers(changes, min_change):
+        confident = [c for c in changes if not c.is_new and abs(c.change) >= min_change]
+        confident.sort(key=lambda c: abs(c.change), reverse=True)
+        return confident[:top_n]
+
+    formation_movers = movers(formation_changes, config.ALERT_FORMATION_CHANGE_PCT)
+    play_movers = movers(run_changes + pass_changes, config.ALERT_PLAY_CHANGE_PCT)
+
+    new_formations = [c.formation for c in formation_changes if c.is_new and c.live_pct > 0]
+    new_plays = [
+        c.play_name for c in (run_changes + pass_changes)
+        if c.is_new and c.live_count >= config.NEW_PLAY_MIN_LIVE_COUNT
+    ]
+
+    return BiggestChanges(
+        formation_movers=formation_movers,
+        play_movers=play_movers,
+        new_plays=new_plays,
+        new_formations=new_formations,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Section 9: Coach Alerts (plain-English, actionable, confidence-gated)
+# ---------------------------------------------------------------------------
+
+def build_coach_alerts(
+    identity: IdentityComparison,
+    formation_comparisons: List[FormationComparison],
+    formation_changes: List[FormationChange],
+    run_changes: List[PlayChange],
+    pass_changes: List[PlayChange],
+    down_distance_expectations: List[SituationExpectation],
+    field_zone_expectations: List[SituationExpectation],
 ) -> List[str]:
-    """Generates single-line plain-English observations from every
-    comparison already computed above. This is the 'coach reads this and
-    immediately understands what changed' section - no raw tables.
-    """
+    """Turns every comparison into short, plain-English observations a coach
+    can act on between series. Live-based alerts fire only when the live
+    sample is big enough to trust."""
     alerts: List[str] = []
 
-    # Formation usage swings
+    # Overall run/pass shift
+    if abs(identity.pass_pct_change) >= config.ALERT_RUNPASS_CHANGE_PCT:
+        direction = "more" if identity.pass_pct_change > 0 else "less"
+        alerts.append(f"Passing {abs(identity.pass_pct_change):.0f}% {direction} than the scouting report.")
+
+    # Formation usage swings (across all formations)
     for c in formation_changes:
         if c.is_new and c.live_pct > 0:
             alerts.append(f"{c.formation} has appeared for the first time ({c.live_pct:.0f}% of live snaps).")
         elif abs(c.change) >= config.ALERT_FORMATION_CHANGE_PCT:
             direction = "increased" if c.change > 0 else "decreased"
-            alerts.append(f"{c.formation} usage {direction} by {abs(c.change):.0f}%.")
+            alerts.append(f"{c.formation} usage has {direction} {abs(c.change):.0f}%.")
 
-    # Overall run/pass shift
-    pass_shift = round(live_summary.pass_pct - scout_summary.pass_pct, 1)
-    if abs(pass_shift) >= config.ALERT_RUNPASS_CHANGE_PCT:
-        direction = "more" if pass_shift > 0 else "less"
-        alerts.append(f"Passing {abs(pass_shift):.0f}% {direction} than the scouting report.")
+    # Per-formation pass tendency (only for the tracked top formations, confident)
+    for fc in formation_comparisons:
+        if not fc.confident:
+            continue
+        if fc.pass_pct_change >= config.ALERT_RUNPASS_CHANGE_PCT:
+            alerts.append(f"They are throwing much more from {fc.formation} ({fc.live_pass_pct:.0f}% pass).")
+        elif fc.pass_pct_change <= -config.ALERT_RUNPASS_CHANGE_PCT:
+            alerts.append(f"They are running much more from {fc.formation} ({fc.live_run_pct:.0f}% run).")
 
     # Play-level: new plays, dropped favorites, promoted plays
     for changes, label in ((run_changes, "run"), (pass_changes, "pass")):
@@ -787,18 +855,32 @@ def build_coach_alerts(
                   and c.live_count <= config.LOW_USAGE_ALERT_MAX_LIVE_COUNT):
                 alerts.append(f"{c.play_name} was a scout favorite, barely used live.")
 
-        # The single biggest riser of this type becomes "now primary" if it's
-        # also the most-called live play of that type.
         risers = [c for c in changes if c.change >= config.ALERT_PLAY_CHANGE_PCT]
         if risers:
             top_riser = max(risers, key=lambda c: c.live_pct)
             if top_riser.live_pct == max((c.live_pct for c in changes), default=0):
-                alerts.append(f"{top_riser.play_name} is now the primary {label}.")
+                alerts.append(f"{top_riser.play_name} has become their primary {label}.")
 
-    # Down & distance / field position deviations
-    for comp in down_distance_comparisons + field_zone_comparisons:
-        if comp.alert_text:
-            alerts.append(comp.alert_text)
+    # Situational shifts (down & distance, then field position)
+    for exp in down_distance_expectations:
+        if not (exp.changed and exp.live_confident):
+            continue
+        if exp.verdict == config.STATUS_FLIPPED:
+            alerts.append(
+                f"{exp.label} has flipped from {exp.scout_dominant_type.lower()}-heavy "
+                f"to {exp.live_dominant_type.lower()}-heavy."
+            )
+        else:
+            alerts.append(f"On {exp.label} they are {exp.verdict.lower()} "
+                          f"({exp.live_pass_pct:.0f}% pass vs {exp.scout_pass_pct:.0f}% scouted).")
+
+    for exp in field_zone_expectations:
+        if not exp.live_confident:
+            continue
+        if exp.live_dominant_type == "Pass" and exp.live_pass_pct >= 65:
+            alerts.append(f"In the {exp.label} they are throwing {exp.live_pass_pct:.0f}%.")
+        elif exp.live_dominant_type == "Run" and exp.live_run_pct >= 65:
+            alerts.append(f"In the {exp.label} they are running {exp.live_run_pct:.0f}%.")
 
     return alerts
 
@@ -806,6 +888,17 @@ def build_coach_alerts(
 # ---------------------------------------------------------------------------
 # Game Plan Match Score
 # ---------------------------------------------------------------------------
+
+@dataclass
+class GamePlanScore:
+    """The overall Game Plan Match Score and its components."""
+    score: float
+    band_label: str
+    formation_component: float
+    runpass_component: float
+    top_plays_component: float
+    down_distance_component: float
+
 
 def _distribution_similarity(scout_pcts: dict, live_pcts: dict) -> float:
     """Total-variation-distance based similarity between two % distributions
@@ -837,7 +930,7 @@ def compute_game_plan_score(
     scout_top_passes: List[PlayCallStat],
     live_top_runs: List[PlayCallStat],
     live_top_passes: List[PlayCallStat],
-    down_distance_comparisons: List[SituationComparison],
+    down_distance_expectations: List[SituationExpectation],
 ) -> GamePlanScore:
     """Computes the weighted Game Plan Match Score:
         40% Formation Usage similarity
@@ -847,16 +940,12 @@ def compute_game_plan_score(
 
     Each component is 0-100; the final score is their weighted sum.
     """
-    # Formation usage component
     scout_formation_pcts = {c.formation: c.scout_pct for c in formation_changes}
     live_formation_pcts = {c.formation: c.live_pct for c in formation_changes}
     formation_component = _distribution_similarity(scout_formation_pcts, live_formation_pcts)
 
-    # Run/pass ratio component - simple single-number deviation
     runpass_component = max(0.0, 100.0 - abs(live_summary.pass_pct - scout_summary.pass_pct))
 
-    # Top plays overlap component - what fraction of scout's top plays are
-    # still showing up in live's top plays
     def _overlap_pct(scout_top, live_top):
         scout_names = {s.play_name for s in scout_top}
         live_names = {s.play_name for s in live_top}
@@ -868,9 +957,9 @@ def compute_game_plan_score(
     pass_overlap = _overlap_pct(scout_top_passes, live_top_passes)
     top_plays_component = (run_overlap + pass_overlap) / 2.0
 
-    # Down & distance component - average how close pass% stayed per bucket
-    if down_distance_comparisons:
-        avg_deviation = sum(abs(c.pass_pct_change) for c in down_distance_comparisons) / len(down_distance_comparisons)
+    comparable = [e for e in down_distance_expectations if e.live_count > 0]
+    if comparable:
+        avg_deviation = sum(abs(e.pass_pct_change) for e in comparable) / len(comparable)
         down_distance_component = max(0.0, 100.0 - avg_deviation)
     else:
         down_distance_component = 100.0  # no comparable buckets yet - neutral
