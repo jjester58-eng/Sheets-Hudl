@@ -702,16 +702,50 @@ def _build_situation_expectations(
 
 
 def _down_distance_labels() -> List[str]:
+    """Explicit report order for down & distance rows.
+    Skips 1st & Short (rare on 1st down). Overall Long/Medium/Short are
+    appended separately in build_down_distance_expectations via DIST_BUCKET.
+    """
     return [
-        _down_distance_label(down, dist_bucket)
-        for down in config.DOWNS_TRACKED
-        for dist_bucket in ("Short", "Medium", "Long")
+        "1st & Medium",
+        "1st & Long",
+        "2nd & Short",
+        "2nd & Medium",
+        "2nd & Long",
+        "3rd & Short",
+        "3rd & Medium",
+        "3rd & Long",
     ]
 
 
 def build_down_distance_expectations(scout_df: pd.DataFrame, live_df: pd.DataFrame) -> List[SituationExpectation]:
-    """Down & Distance version of the Expected Call engine."""
-    return _build_situation_expectations(scout_df, live_df, "DOWN_DISTANCE_LABEL", _down_distance_labels())
+    """Down & Distance version of the Expected Call engine.
+
+    Order:
+      1st & Medium, 1st & Long,
+      2nd & Short, 2nd & Medium, 2nd & Long,
+      3rd & Short, 3rd & Medium, 3rd & Long,
+      then overall Long, Medium, Short (all downs combined).
+    """
+    results = _build_situation_expectations(
+        scout_df, live_df, "DOWN_DISTANCE_LABEL", _down_distance_labels()
+    )
+
+    # Overall distance buckets (any down)  Long, Medium, Short
+    for bucket in ("Long", "Medium", "Short"):
+        scout_subset = (
+            scout_df[scout_df["DIST_BUCKET"] == bucket]
+            if "DIST_BUCKET" in scout_df.columns else pd.DataFrame()
+        )
+        live_subset = (
+            live_df[live_df["DIST_BUCKET"] == bucket]
+            if "DIST_BUCKET" in live_df.columns else pd.DataFrame()
+        )
+        if scout_subset.empty and live_subset.empty:
+            continue
+        results.append(_situation_expectation(bucket, scout_subset, live_subset))
+
+    return results
 
 
 def build_field_zone_expectations(scout_df: pd.DataFrame, live_df: pd.DataFrame) -> List[SituationExpectation]:
