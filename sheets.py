@@ -82,10 +82,116 @@ def load_sheet_as_df(spreadsheet: gspread.Spreadsheet, tab_name: str) -> pd.Data
     return df
 
 
+def _apply_report_formatting(ws: gspread.Worksheet, rows: List[List[str]], max_width: int) -> None:
+    """Applies simple visual formatting after the values are written:
+      - Section headers (===== ... =====): bold + dark fill
+      - Column header rows (Scout/Live/Trend, Component/Score/Read, etc.): bold + light fill
+      - Change / alert rows (contain ⚠, NEW, ▲, ▼): light red fill
+      - Stable rows (contain ✓ and not ⚠): light green fill
+    """
+    # Unicode glyphs used in reports.py
+    warn = "\u26a0"   # ⚠
+    check = "\u2713"  # ✓
+    up = "\u25b2"     # ▲
+    down = "\u25bc"   # ▼
+
+    requests = []
+    sheet_id = ws.id
+
+    def _range(row_idx: int):
+        """0-based row index → GridRange for the full report width."""
+        return {
+            "sheetId": sheet_id,
+            "startRowIndex": row_idx,
+            "endRowIndex": row_idx + 1,
+            "startColumnIndex": 0,
+            "endColumnIndex": max_width,
+        }
+
+    def _repeat(row_idx: int, fmt: dict):
+        requests.append({
+            "repeatCell": {
+                "range": _range(row_idx),
+                "cell": {"userEnteredFormat": fmt},
+                "fields": "userEnteredFormat(backgroundColor,textFormat)",
+            }
+        })
+
+    header_keywords = {
+        "scout", "live", "trend", "component", "score", "read",
+        "situation", "expected", "formation", "r%", "p%", "play", "type",
+        "fav runs", "fav pass", "run%", "pass%",
+    }
+
+    for i, row in enumerate(rows):
+        text = " ".join(str(c) for c in row).strip()
+        if not text:
+            continue
+
+        # Section headers: ===== TITLE =====
+        if text.startswith("====="):
+            _repeat(i, {
+                "backgroundColor": {"red": 0.15, "green": 0.20, "blue": 0.30},
+                "textFormat": {"bold": True, "foregroundColor": {"red": 1, "green": 1, "blue": 1}},
+            })
+            continue
+
+        # Sub-headers: — title —
+        if text.startswith("—") or text.startswith("\u2014"):
+            _repeat(i, {
+                "backgroundColor": {"red": 0.85, "green": 0.88, "blue": 0.92},
+                "textFormat": {"bold": True},
+            })
+            continue
+
+        # Column header rows (short label rows)
+        first = str(row[0]).strip().lower() if row else ""
+        if first in header_keywords or (len(row) >= 3 and first == ""):
+            # blank-first header like ["", "Scout", "Live", "Trend"]
+            joined_lower = text.lower()
+            if any(k in joined_lower for k in ("scout", "component", "situation", "play", "formation")):
+                _repeat(i, {
+                    "backgroundColor": {"red": 0.90, "green": 0.92, "blue": 0.95},
+                    "textFormat": {"bold": True},
+                })
+                continue
+
+        # Alert / change rows → light red
+        if warn in text or "NEW FORM" in text or "NEW PLAY" in text or up in text or down in text:
+            if "NEW FORM" in text or "NEW PLAY" in text or warn in text:
+                _repeat(i, {
+                    "backgroundColor": {"red": 0.96, "green": 0.80, "blue": 0.80},
+                    "textFormat": {"bold": False},
+                })
+            else:
+                # ▲ / ▼ movers — softer amber/red
+                _repeat(i, {
+                    "backgroundColor": {"red": 0.98, "green": 0.90, "blue": 0.80},
+                })
+            continue
+
+        # Stable / following-scout rows → light green
+        if check in text and warn not in text:
+            _repeat(i, {
+                "backgroundColor": {"red": 0.85, "green": 0.94, "blue": 0.85},
+            })
+            continue
+
+    if not requests:
+        return
+
+    try:
+        ws.spreadsheet.batch_update({"requests": requests})
+        print(f"Applied formatting to {len(requests)} rows")
+    except Exception as e:
+        # Formatting is best-effort — never fail the report write for it
+        print(f"Warning: could not apply sheet formatting: {e}")
+
+
 def write_report(spreadsheet: gspread.Spreadsheet, rows: List[List[str]]) -> None:
     """Clears (or creates) the output tab and writes the report starting
     at A1. Every row is padded to the same width so the write is a clean
-    rectangle."""
+    rectangle. Then applies section/alert color formatting."""
     try:
         ws = spreadsheet.worksheet(config.OUTPUT_SHEET_NAME)
         ws.clear()
@@ -99,3 +205,5 @@ def write_report(spreadsheet: gspread.Spreadsheet, rows: List[List[str]]) -> Non
 
     ws.update(range_name="A1", values=padded_rows, value_input_option="RAW")
     print(f"Wrote {len(padded_rows)} rows to '{config.OUTPUT_SHEET_NAME}'")
+
+    _apply_report_formatting(ws, padded_rows, max_width)
