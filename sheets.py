@@ -191,19 +191,47 @@ def _apply_report_formatting(ws: gspread.Worksheet, rows: List[List[str]], max_w
 def write_report(spreadsheet: gspread.Spreadsheet, rows: List[List[str]]) -> None:
     """Clears (or creates) the output tab and writes the report starting
     at A1. Every row is padded to the same width so the write is a clean
-    rectangle. Then applies section/alert color formatting."""
-    try:
-        ws = spreadsheet.worksheet(config.OUTPUT_SHEET_NAME)
-        ws.clear()
-        print(f"Cleared existing '{config.OUTPUT_SHEET_NAME}' tab")
-    except gspread.exceptions.WorksheetNotFound:
-        ws = spreadsheet.add_worksheet(title=config.OUTPUT_SHEET_NAME, rows=1000, cols=10)
-        print(f"Created new '{config.OUTPUT_SHEET_NAME}' tab")
+    rectangle. Then applies section/alert color formatting.
+
+    Safety: refuse to clear if there are no rows; surface write errors
+    clearly so a failed run cannot look like a successful blank sheet.
+    """
+    if not rows:
+        print("ERROR: report has 0 rows — refusing to clear the output tab.")
+        return
 
     max_width = max((len(row) for row in rows), default=1)
     padded_rows = [row + [""] * (max_width - len(row)) for row in rows]
+    print(f"Report ready: {len(padded_rows)} rows x {max_width} cols")
 
-    ws.update(range_name="A1", values=padded_rows, value_input_option="RAW")
-    print(f"Wrote {len(padded_rows)} rows to '{config.OUTPUT_SHEET_NAME}'")
+    try:
+        ws = spreadsheet.worksheet(config.OUTPUT_SHEET_NAME)
+    except gspread.exceptions.WorksheetNotFound:
+        ws = spreadsheet.add_worksheet(
+            title=config.OUTPUT_SHEET_NAME,
+            rows=max(len(padded_rows) + 50, 1000),
+            cols=max(max_width + 2, 10),
+        )
+        print(f"Created new '{config.OUTPUT_SHEET_NAME}' tab")
 
-    _apply_report_formatting(ws, padded_rows, max_width)
+    try:
+        if ws.row_count < len(padded_rows):
+            ws.resize(rows=len(padded_rows) + 50)
+        if ws.col_count < max_width:
+            ws.resize(cols=max_width + 2)
+    except Exception as e:
+        print(f"Warning: could not resize worksheet: {e}")
+
+    try:
+        ws.clear()
+        print(f"Cleared existing '{config.OUTPUT_SHEET_NAME}' tab")
+        ws.update(range_name="A1", values=padded_rows, value_input_option="RAW")
+        print(f"Wrote {len(padded_rows)} rows to '{config.OUTPUT_SHEET_NAME}'")
+    except Exception as e:
+        print(f"ERROR: failed writing report values: {e}")
+        raise
+
+    try:
+        _apply_report_formatting(ws, padded_rows, max_width)
+    except Exception as e:
+        print(f"Warning: formatting skipped: {e}")
