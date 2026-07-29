@@ -2,30 +2,7 @@
 reports.py
 ----------
 Turns the data structures produced by analysis.py into rows of text ready
-to write to a Google Sheet. This module does zero calculation - if you're
-computing a percentage or an average in here, it belongs in analysis.py
-instead.
-
-Design philosophy (this is a GAME PLAN, not a stats dump):
-    Everything answers ONE question -
-        "Are they doing what we scouted, or have they changed?"
-    So the report is comparison-first. There is no standalone "scout
-    section" and no duplicate "live section" - every number is shown as
-    Scout vs Live vs Trend, side by side, once.
-
-Report order (a DC needs ~6 answers, fast):
-    1. OVERALL IDENTITY     - who are they, and have they changed?
-    2. GAME PLAN MATCH      - one visual bar, one verdict
-    3. BIGGEST CHANGES      - the movers a coordinator reads first
-    4. TOP FORMATIONS       - usage + tendency + status, per formation
-    5. FORMATION TENDENCIES - the book: run/pass split + favorites
-    6. DOWN & DISTANCE      - Scout vs Live + the Expected Call engine
-    7. FIELD POSITION       - same shape
-    8. EXPLOSIVE PLAYS      - one small table
-    9. COACH ALERTS         - plain-English, actionable
-
-Every function returns a List[List[str]] - each inner list is one row of
-cells, ready to hand to sheets.py for writing.
+to write to a Google Sheet. This module does zero calculation.
 """
 
 from typing import List, Optional
@@ -44,7 +21,6 @@ from analysis import (
 
 Row = List[str]
 
-# Glyphs used throughout the report.
 UP = "\u25b2"       # ▲
 DOWN = "\u25bc"     # ▼
 CHECK = "\u2713"    # ✓
@@ -60,26 +36,20 @@ def _section_header(title: str) -> Row:
 
 
 def _sub_header(title: str) -> Row:
-    return [f"\u2014 {title} \u2014"]
+    return [f"— {title} —"]
 
-
-# ---------------------------------------------------------------------------
-# Shared formatting helpers
-# ---------------------------------------------------------------------------
 
 def _pct(value: float) -> str:
     return f"{value:.0f}%"
 
 
 def _run_pass_cell(run_pct: float, pass_pct: float, play_count: int) -> str:
-    """The compact '72R/28P' cell, or a dash when there's nothing to show."""
     if play_count == 0:
-        return "\u2014"
+        return "—"
     return f"{run_pct:.0f}R/{pass_pct:.0f}P"
 
 
 def _arrow_change(change: float) -> str:
-    """'▲ +3%' / '▼ -15%' / '✓' for a signed percentage-point change."""
     if change > 0:
         return f"{UP} +{change:.0f}%"
     if change < 0:
@@ -88,18 +58,13 @@ def _arrow_change(change: float) -> str:
 
 
 def _status_mark(status: str) -> str:
-    """Prefixes a status with ✓ (following scout) or ⚠ (deviating)."""
     mark = CHECK if status == config.STATUS_SAME else WARN
     return f"{mark} {status}"
 
 
 def _expected_play_names(plays: List[PlayProbability]) -> str:
-    return ", ".join(p.play_name for p in plays) if plays else "\u2014"
+    return ", ".join(p.play_name for p in plays) if plays else "—"
 
-
-# ---------------------------------------------------------------------------
-# 1. OVERALL IDENTITY
-# ---------------------------------------------------------------------------
 
 def build_identity_section(identity: IdentityComparison) -> List[Row]:
     rows: List[Row] = [_section_header("OVERALL IDENTITY")]
@@ -112,26 +77,22 @@ def build_identity_section(identity: IdentityComparison) -> List[Row]:
     else:
         trend = CHECK
     rows.append([
-        "Run / Pass",
-        f"{_pct(identity.scout_run_pct)} / {_pct(identity.scout_pass_pct)}",
-        f"{_pct(identity.live_run_pct)} / {_pct(identity.live_pass_pct)}",
+        "Run/Pass",
+        f"{_pct(identity.scout_run_pct)}/{_pct(identity.scout_pass_pct)}",
+        f"{_pct(identity.live_run_pct)}/{_pct(identity.live_pass_pct)}",
         trend,
     ])
     rows.append([
-        "Explosive Run (10+)",
+        "X-Run (10+)",
         str(identity.scout_explosive_run), str(identity.live_explosive_run), "",
     ])
     rows.append([
-        "Explosive Pass (15+)",
+        "X-Pass (15+)",
         str(identity.scout_explosive_pass), str(identity.live_explosive_pass), "",
     ])
     rows.append(_blank_row())
     return rows
 
-
-# ---------------------------------------------------------------------------
-# 2. GAME PLAN MATCH
-# ---------------------------------------------------------------------------
 
 def _match_bar(score: float) -> str:
     segments = config.GAME_PLAN_BAR_SEGMENTS
@@ -145,38 +106,32 @@ def build_game_plan_section(gps: Optional[GamePlanScore], live_ready: bool) -> L
     rows: List[Row] = [_section_header("GAME PLAN MATCH")]
 
     if gps is None or not live_ready:
-        rows.append([f"{_match_bar(0)}  \u2014  not enough live data yet"])
-        rows.append(["Comparisons populate once enough plays are charted "
-                     f"({config.MIN_LIVE_PLAYS_FOR_COMPARISON}+)."])
+        rows.append([f"{_match_bar(0)}  —  not enough live data yet"])
+        rows.append([f"Need {config.MIN_LIVE_PLAYS_FOR_COMPARISON}+ live plays."])
         rows.append(_blank_row())
         return rows
 
-    rows.append([f"{_match_bar(gps.score)}  {gps.score:.0f}%"])
-    rows.append([gps.band_label])
-    rows.append([f"Formation {gps.formation_component:.0f}  |  "
-                 f"Run/Pass {gps.runpass_component:.0f}  |  "
-                 f"Top Plays {gps.top_plays_component:.0f}  |  "
-                 f"Down & Dist {gps.down_distance_component:.0f}"])
+    rows.append([f"{_match_bar(gps.score)}  {gps.score:.0f}%  {gps.band_label}"])
+    rows.append([
+        f"Form {gps.formation_component:.0f} | R/P {gps.runpass_component:.0f} | "
+        f"Top {gps.top_plays_component:.0f} | D&D {gps.down_distance_component:.0f}"
+    ])
     rows.append(_blank_row())
     return rows
 
-
-# ---------------------------------------------------------------------------
-# 3. BIGGEST CHANGES
-# ---------------------------------------------------------------------------
 
 def build_biggest_changes_section(changes: BiggestChanges, live_ready: bool) -> List[Row]:
     rows: List[Row] = [_section_header("BIGGEST CHANGES")]
 
     if not live_ready:
-        rows.append(["(waiting on more live plays before flagging changes)"])
+        rows.append(["(waiting on more live plays)"])
         rows.append(_blank_row())
         return rows
 
     has_any = (changes.formation_movers or changes.play_movers
                or changes.new_formations or changes.new_plays)
     if not has_any:
-        rows.append([f"{CHECK} Nothing significant - offense is following the scout."])
+        rows.append([f"{CHECK} Following scout."])
         rows.append(_blank_row())
         return rows
 
@@ -187,17 +142,13 @@ def build_biggest_changes_section(changes: BiggestChanges, live_ready: bool) -> 
         arrow = UP if c.change > 0 else DOWN
         rows.append([f"{arrow} {c.play_name}", f"{c.change:+.0f}%"])
     for formation in changes.new_formations:
-        rows.append(["NEW FORMATION", formation])
+        rows.append(["NEW FORM", formation])
     for play in changes.new_plays:
         rows.append(["NEW PLAY", play])
 
     rows.append(_blank_row())
     return rows
 
-
-# ---------------------------------------------------------------------------
-# 4. TOP FORMATIONS (scout vs live, per formation)
-# ---------------------------------------------------------------------------
 
 def build_top_formations_section(comparisons: List[FormationComparison]) -> List[Row]:
     rows: List[Row] = [_section_header("TOP FORMATIONS")]
@@ -207,31 +158,32 @@ def build_top_formations_section(comparisons: List[FormationComparison]) -> List
         return rows
 
     for f in comparisons:
-        rows.append([f.formation])
-        rows.append(["", "Scout", "Live", "Trend"])
         usage_trend = "NEW" if f.is_new else _arrow_change(f.change)
-        rows.append(["Usage", _pct(f.scout_pct), _pct(f.live_pct), usage_trend])
+        rp_trend = (
+            _arrow_change(f.pass_pct_change)
+            if abs(f.pass_pct_change) >= config.ALERT_RUNPASS_CHANGE_PCT
+            else CHECK
+        )
         rows.append([
-            "Run/Pass",
-            _run_pass_cell(f.scout_run_pct, f.scout_pass_pct, f.scout_count),
-            _run_pass_cell(f.live_run_pct, f.live_pass_pct, f.live_count),
-            _arrow_change(f.pass_pct_change) if abs(f.pass_pct_change) >= config.ALERT_RUNPASS_CHANGE_PCT else CHECK,
+            f.formation,
+            f"Use {_pct(f.scout_pct)}→{_pct(f.live_pct)} {usage_trend}",
+            f"R/P {_run_pass_cell(f.scout_run_pct, f.scout_pass_pct, f.scout_count)}"
+            f"→{_run_pass_cell(f.live_run_pct, f.live_pass_pct, f.live_count)} {rp_trend}",
+            _status_mark(f.status),
         ])
+        detail_parts = []
         if f.scout_top_runs:
-            rows.append(["Runs", ", ".join(f.scout_top_runs)])
+            detail_parts.append(f"Runs: {', '.join(f.scout_top_runs)}")
         if f.scout_top_passes:
-            rows.append(["Pass", ", ".join(f.scout_top_passes)])
+            detail_parts.append(f"Pass: {', '.join(f.scout_top_passes)}")
         if f.new_plays:
-            rows.append([f"{WARN} New", ", ".join(f.new_plays)])
-        rows.append(["Status", _status_mark(f.status)])
+            detail_parts.append(f"{WARN} New: {', '.join(f.new_plays)}")
+        if detail_parts:
+            rows.append(["  " + " | ".join(detail_parts)])
         rows.append(_blank_row())
 
     return rows
 
-
-# ---------------------------------------------------------------------------
-# 5. FORMATION TENDENCIES (the book: run/pass split + favorites)
-# ---------------------------------------------------------------------------
 
 def build_formation_tendencies_section(formations: List[FormationSummary]) -> List[Row]:
     rows: List[Row] = [_section_header("FORMATION TENDENCIES (SCOUT)")]
@@ -240,57 +192,52 @@ def build_formation_tendencies_section(formations: List[FormationSummary]) -> Li
         rows.append(_blank_row())
         return rows
 
-    rows.append(["Formation", "Run%", "Pass%", "Favorite Runs", "Favorite Passes"])
+    rows.append(["Formation", "R%", "P%", "Fav Runs", "Fav Pass"])
     for f in formations:
         rows.append([
             f.formation,
             _pct(f.run_pct),
             _pct(f.pass_pct),
-            ", ".join(f.top_run_plays) or "\u2014",
-            ", ".join(f.top_pass_plays) or "\u2014",
+            ", ".join(f.top_run_plays) or "—",
+            ", ".join(f.top_pass_plays) or "—",
         ])
     rows.append(_blank_row())
     return rows
 
 
-# ---------------------------------------------------------------------------
-# 6 & 7. DOWN & DISTANCE / FIELD POSITION (+ Expected Call engine)
-# ---------------------------------------------------------------------------
-
 def _situation_trend_cell(exp: SituationExpectation) -> str:
-    """The compact Trend cell for the situation table."""
     if exp.live_count == 0:
-        return "\u2014"
+        return "—"
     if not exp.live_confident:
-        return f"low conf ({exp.live_count})"
+        return f"low ({exp.live_count})"
     if exp.verdict == config.STATUS_SAME:
         return CHECK
     return f"{WARN} {exp.verdict}"
 
 
 def _expected_call_block(exp: SituationExpectation) -> List[Row]:
-    """The deep 'EXPECT vs LIVE' block - the between-series answer to
-    'if they line up here again, what should we expect?'"""
-    rows: List[Row] = [_sub_header(f"EXPECTED CALL: {exp.label}")]
+    rows: List[Row] = [_sub_header(exp.label)]
 
     if exp.scout_confident and exp.scout_expected_plays:
-        rows.append([f"EXPECT: {exp.scout_dominant_pct:.0f}% {exp.scout_dominant_type}"])
-        for i, p in enumerate(exp.scout_expected_plays, start=1):
-            rows.append([f"  {i}. {p.play_name} ({p.pct:.0f}%)"])
+        plays = " / ".join(f"{p.play_name} ({p.pct:.0f}%)" for p in exp.scout_expected_plays)
+        rows.append([f"EXPECT {exp.scout_dominant_pct:.0f}% {exp.scout_dominant_type}: {plays}"])
     else:
-        rows.append([f"EXPECT: low scout sample ({exp.scout_count})"])
+        rows.append([f"EXPECT: low sample ({exp.scout_count})"])
 
     if exp.live_count == 0:
-        rows.append(["LIVE: not seen yet tonight"])
+        rows.append(["LIVE: not seen"])
     elif not exp.live_confident:
-        rows.append([f"LIVE: {exp.live_dominant_pct:.0f}% {exp.live_dominant_type}  "
-                     f"(low confidence, {exp.live_count} plays)"])
+        rows.append([
+            f"LIVE {exp.live_dominant_pct:.0f}% {exp.live_dominant_type} "
+            f"(low conf, {exp.live_count})"
+        ])
     else:
         verdict_mark = CHECK if not exp.changed else WARN
-        rows.append([f"LIVE: {exp.live_dominant_pct:.0f}% {exp.live_dominant_type}  "
-                     f"{verdict_mark} {exp.verdict}"])
-        for i, p in enumerate(exp.live_top_plays, start=1):
-            rows.append([f"  {i}. {p.play_name} ({p.pct:.0f}%)"])
+        plays = " / ".join(f"{p.play_name} ({p.pct:.0f}%)" for p in exp.live_top_plays)
+        rows.append([
+            f"LIVE {exp.live_dominant_pct:.0f}% {exp.live_dominant_type} "
+            f"{verdict_mark} {exp.verdict}: {plays}"
+        ])
 
     return rows
 
@@ -300,18 +247,19 @@ def build_situation_section(
     expectations: List[SituationExpectation],
     empty_message: str,
 ) -> List[Row]:
-    """Compact Scout|Live|Trend|Expected table, followed by an Expected Call
-    block for every situation that has actually changed (confident)."""
     rows: List[Row] = [_section_header(title)]
     if not expectations:
         rows.append([empty_message])
         rows.append(_blank_row())
         return rows
 
-    rows.append(["Situation", "Scout", "Live", "Trend", "Expected Plays"])
+    rows.append(["Situation", "Scout", "Live", "Trend", "Expected"])
     for exp in expectations:
-        expected = (_expected_play_names(exp.scout_expected_plays)
-                    if exp.scout_confident else f"(low sample {exp.scout_count})")
+        expected = (
+            _expected_play_names(exp.scout_expected_plays)
+            if exp.scout_confident
+            else f"(n={exp.scout_count})"
+        )
         rows.append([
             exp.label,
             _run_pass_cell(exp.scout_run_pct, exp.scout_pass_pct, exp.scout_count),
@@ -329,14 +277,10 @@ def build_situation_section(
     return rows
 
 
-# ---------------------------------------------------------------------------
-# 8. EXPLOSIVE PLAYS
-# ---------------------------------------------------------------------------
-
 def build_explosive_section(explosive: List[ExplosiveComparison]) -> List[Row]:
     rows: List[Row] = [_section_header("EXPLOSIVE PLAYS")]
     if not explosive:
-        rows.append(["(no explosive plays yet)"])
+        rows.append(["(none yet)"])
         rows.append(_blank_row())
         return rows
 
@@ -347,29 +291,21 @@ def build_explosive_section(explosive: List[ExplosiveComparison]) -> List[Row]:
     return rows
 
 
-# ---------------------------------------------------------------------------
-# 9. COACH ALERTS
-# ---------------------------------------------------------------------------
-
 def build_coach_alerts_section(alerts: List[str], live_ready: bool) -> List[Row]:
     rows: List[Row] = [_section_header("COACH ALERTS")]
     if not live_ready:
-        rows.append(["(not enough live data yet)"])
+        rows.append(["(need more live data)"])
         rows.append(_blank_row())
         return rows
     if not alerts:
-        rows.append([f"{CHECK} Nothing significant yet - offense is following the scout."])
+        rows.append([f"{CHECK} Following scout."])
         rows.append(_blank_row())
         return rows
     for alert in alerts:
-        rows.append([f"\u2022 {alert}"])
+        rows.append([f"• {alert}"])
     rows.append(_blank_row())
     return rows
 
-
-# ---------------------------------------------------------------------------
-# Full report assembly
-# ---------------------------------------------------------------------------
 
 def build_full_report(
     identity: IdentityComparison,
@@ -384,7 +320,6 @@ def build_full_report(
     coach_alerts: List[str],
     live_ready: bool,
 ) -> List[Row]:
-    """Assembles every section, in order, into the final list of rows."""
     rows: List[Row] = []
 
     rows += build_identity_section(identity)
@@ -399,7 +334,7 @@ def build_full_report(
     )
 
     field_empty = (
-        "(no field position data - add a 'FIELD POS' column to enable this section)"
+        "(no field pos data — add FIELD POS column)"
         if not field_position_available else "(no field position data)"
     )
     rows += build_situation_section("FIELD POSITION", field_zone_expectations, field_empty)
@@ -408,100 +343,3 @@ def build_full_report(
     rows += build_coach_alerts_section(coach_alerts, live_ready)
 
     return rows
-and  """
-analyze_tendencies.py
-----------------------
-Orchestrator only. Loads scout and live data, runs every analysis
-function, and writes the report. No football math (that's analysis.py)
-and no report formatting (that's reports.py) - if you're tempted to add
-either kind of logic here, it belongs in one of those modules instead.
-
-Answers, comparison-first: "Are they doing what we scouted, or have they
-changed - and if they line up here again, what should we expect?"
-"""
-
-import config
-import sheets
-import analysis
-import reports
-
-
-def main() -> None:
-    gc = sheets.get_client()
-    spreadsheet = sheets.open_spreadsheet(gc)
-    sheets.validate_required_tabs(spreadsheet, [config.SOURCE_SHEET_NAME, config.SCOUT_SHEET_NAME])
-
-    scout_df = analysis.add_situational_columns(sheets.load_sheet_as_df(spreadsheet, config.SCOUT_SHEET_NAME))
-    live_df = analysis.add_situational_columns(sheets.load_sheet_as_df(spreadsheet, config.SOURCE_SHEET_NAME))
-
-    # --- Headline numbers for each side (building blocks) ---
-    scout_summary = analysis.build_summary(scout_df)
-    live_summary = analysis.build_summary(live_df)
-    scout_top_runs = analysis.build_top_plays(scout_df, config.PLAY_TYPE_RUN)
-    scout_top_passes = analysis.build_top_plays(scout_df, config.PLAY_TYPE_PASS)
-    live_top_runs = analysis.build_top_plays(live_df, config.PLAY_TYPE_RUN)
-    live_top_passes = analysis.build_top_plays(live_df, config.PLAY_TYPE_PASS)
-
-    # --- 1. Overall Identity (scout vs live) ---
-    identity = analysis.build_identity_comparison(scout_summary, live_summary)
-
-    # --- 4. Top Formations (comparison, per formation) ---
-    formation_comparisons = analysis.build_formation_comparisons(scout_df, live_df)
-
-    # --- 5. Formation Tendencies (the scout "book") ---
-    formation_tendencies = analysis.build_top_formations(scout_df, top_n=config.TOP_N_FORMATIONS * 2)
-
-    # --- 6 & 7. Down & Distance / Field Position + Expected Call engine ---
-    down_distance_expectations = analysis.build_down_distance_expectations(scout_df, live_df)
-    field_zone_expectations = analysis.build_field_zone_expectations(scout_df, live_df)
-    field_position_available = (
-        analysis.has_field_position_data(scout_df) or analysis.has_field_position_data(live_df)
-    )
-
-    # --- 8. Explosive Plays (comparison) ---
-    explosive = analysis.build_explosive_comparison(scout_df, live_df)
-
-    # --- Raw movers (feed Biggest Changes, Coach Alerts, Game Plan Match) ---
-    formation_changes = analysis.compare_formations(scout_df, live_df)
-    run_changes = analysis.compare_plays(scout_df, live_df, config.PLAY_TYPE_RUN)
-    pass_changes = analysis.compare_plays(scout_df, live_df, config.PLAY_TYPE_PASS)
-
-    # --- 3. Biggest Changes ---
-    biggest_changes = analysis.build_biggest_changes(formation_changes, run_changes, pass_changes)
-
-    # --- 9. Coach Alerts ---
-    coach_alerts = analysis.build_coach_alerts(
-        identity, formation_comparisons, formation_changes,
-        run_changes, pass_changes,
-        down_distance_expectations, field_zone_expectations,
-    )
-
-    # --- 2. Game Plan Match ---
-    live_ready = live_summary.total_plays >= config.MIN_LIVE_PLAYS_FOR_COMPARISON
-    game_plan_score = analysis.compute_game_plan_score(
-        formation_changes, scout_summary, live_summary,
-        scout_top_runs, scout_top_passes, live_top_runs, live_top_passes,
-        down_distance_expectations,
-    ) if live_ready else None
-
-    report_rows = reports.build_full_report(
-        identity=identity,
-        game_plan_score=game_plan_score,
-        biggest_changes=biggest_changes,
-        formation_comparisons=formation_comparisons,
-        formation_tendencies=formation_tendencies,
-        down_distance_expectations=down_distance_expectations,
-        field_zone_expectations=field_zone_expectations,
-        field_position_available=field_position_available,
-        explosive=explosive,
-        coach_alerts=coach_alerts,
-        live_ready=live_ready,
-    )
-
-    sheets.write_report(spreadsheet, report_rows)
-    print("Done.")
-
-
-if __name__ == "__main__":
-    main()
-I need the output veiw a little more conscice.
