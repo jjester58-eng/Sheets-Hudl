@@ -127,9 +127,9 @@ def apply_trend_formatting(ws: gspread.Worksheet, trend_types: List[str]) -> Non
 
     print("Applying trend color coding formatting...")
     
-    # Soft, readable pastel background colors
-    green_format = {"backgroundColor": {"red": 0.88, "green": 0.95, "blue": 0.88}}
-    red_format = {"backgroundColor": {"red": 0.97, "green": 0.87, "blue": 0.87}}
+    # Structural Fix: background colors wrapped properly within userEnteredFormat
+    green_format = {"userEnteredFormat": {"backgroundColor": {"red": 0.88, "green": 0.95, "blue": 0.88}}}
+    red_format = {"userEnteredFormat": {"backgroundColor": {"red": 0.97, "green": 0.87, "blue": 0.87}}}
 
     formats = []
 
@@ -138,19 +138,24 @@ def apply_trend_formatting(ws: gspread.Worksheet, trend_types: List[str]) -> Non
     for idx, trend in enumerate(trend_types):
         row_num = idx + 2
         
+        # Safe string cleaning to prevent matching bugs due to casing or whitespace
+        cleaned_trend = str(trend).strip().lower()
+        
         # Formats columns A through Z for the specific row
-        if trend == "stay":
+        if "stay" in cleaned_trend:
             formats.append({
                 "range": f"A{row_num}:Z{row_num}",
                 "format": green_format
             })
-        elif trend == "new":
+        elif "new" in cleaned_trend:
             formats.append({
                 "range": f"A{row_num}:Z{row_num}",
                 "format": red_format
             })
 
     if formats:
-        # Uses a batch request to execute all formatting requests in a single API call
+        # Executes all formatting updates in a single efficient API call
         ws.batch_format(formats)
         print(f"Successfully color-coded {len(formats)} trend rows.")
+    else:
+        print("Warning: 0 formatting rules generated. Ensure your trend list entries match 'stay' or 'new'.")
