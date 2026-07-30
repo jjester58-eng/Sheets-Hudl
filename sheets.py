@@ -108,4 +108,4 @@ def write_report(spreadsheet: gspread.Spreadsheet, rows: List[List[str]]) -> Non
     except TypeError:
         ws.update("A1", padded_rows, value_input_option="RAW")
 
-print(f"Wrote {len(padded_rows)} rows to '{config.OUTPUT_SHEET_NAME}'")
+    print(f"Wrote {len(padded_rows)} rows to '{config.OUTPUT_SHEET_NAME}'")

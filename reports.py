@@ -443,3 +443,5 @@ def build_full_report(
 
     rows += build_explosive_section(explosive)
     rows += build_coach_alerts_section(coach_alerts, live_ready)
+
+    return rows
