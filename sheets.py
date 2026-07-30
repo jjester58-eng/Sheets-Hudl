@@ -86,6 +86,11 @@ def write_report(spreadsheet: gspread.Spreadsheet, rows: List[List[str]]) -> Non
     """Clears (or creates) the output tab and writes the report starting
     at A1. Every row is padded to the same width so the write is a clean
     rectangle."""
+    print(f"write_report: {len(rows)} rows")
+    if not rows:
+        print("ERROR: 0 rows — not clearing tab.")
+        return
+
     try:
         ws = spreadsheet.worksheet(config.OUTPUT_SHEET_NAME)
         ws.clear()
@@ -94,8 +99,13 @@ def write_report(spreadsheet: gspread.Spreadsheet, rows: List[List[str]]) -> Non
         ws = spreadsheet.add_worksheet(title=config.OUTPUT_SHEET_NAME, rows=1000, cols=10)
         print(f"Created new '{config.OUTPUT_SHEET_NAME}' tab")
 
-    max_width = max((len(row) for row in rows), default=1)
-    padded_rows = [row + [""] * (max_width - len(row)) for row in rows]
+    max_width = max(len(row) for row in rows)
+    padded_rows = [[("" if c is None else str(c)) for c in row] for row in rows]
+    padded_rows = [row + [""] * (max_width - len(row)) for row in padded_rows]
 
-    ws.update(range_name="A1", values=padded_rows, value_input_option="RAW")
-    print(f"Wrote {len(padded_rows)} rows to '{config.OUTPUT_SHEET_NAME}'")
+    try:
+        ws.update(range_name="A1", values=padded_rows, value_input_option="RAW")
+    except TypeError:
+        ws.update("A1", padded_rows, value_input_option="RAW")
+
+print(f"Wrote {len(padded_rows)} rows to '{config.OUTPUT_SHEET_NAME}'")
