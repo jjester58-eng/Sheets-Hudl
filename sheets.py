@@ -82,14 +82,14 @@ def load_sheet_as_df(spreadsheet: gspread.Spreadsheet, tab_name: str) -> pd.Data
     return df
 
 
-def write_report(spreadsheet: gspread.Spreadsheet, rows: List[List[str]]) -> None:
+def write_report(spreadsheet: gspread.Spreadsheet, rows: List[List[str]]) -> gspread.Worksheet:
     """Clears (or creates) the output tab and writes the report starting
     at A1. Every row is padded to the same width so the write is a clean
-    rectangle."""
+    rectangle. Returns the worksheet object for further formatting."""
     print(f"write_report: {len(rows)} rows")
     if not rows:
         print("ERROR: 0 rows — not clearing tab.")
-        return
+        return None
 
     try:
         ws = spreadsheet.worksheet(config.OUTPUT_SHEET_NAME)
@@ -109,3 +109,48 @@ def write_report(spreadsheet: gspread.Spreadsheet, rows: List[List[str]]) -> Non
         ws.update("A1", padded_rows, value_input_option="RAW")
 
     print(f"Wrote {len(padded_rows)} rows to '{config.OUTPUT_SHEET_NAME}'")
+    return ws
+
+
+def apply_trend_formatting(ws: gspread.Worksheet, trend_types: List[str]) -> None:
+    """
+    Applies color formatting to rows based on trend types.
+    - 'stay': soft pastel green background
+    - 'new': soft pastel red background
+    
+    `trend_types` should be a parallel list of strings corresponding to the 
+    data rows (excluding the header row).
+    """
+    if not ws or not trend_types:
+        print("Warning: No worksheet or trend data provided for formatting.")
+        return
+
+    print("Applying trend color coding formatting...")
+    
+    # Soft, readable pastel background colors
+    green_format = {"backgroundColor": {"red": 0.88, "green": 0.95, "blue": 0.88}}
+    red_format = {"backgroundColor": {"red": 0.97, "green": 0.87, "blue": 0.87}}
+
+    formats = []
+
+    # Rows in Google Sheets are 1-indexed. Row 1 is the header, 
+    # so the data rows start at Row 2.
+    for idx, trend in enumerate(trend_types):
+        row_num = idx + 2
+        
+        # Formats columns A through Z for the specific row
+        if trend == "stay":
+            formats.append({
+                "range": f"A{row_num}:Z{row_num}",
+                "format": green_format
+            })
+        elif trend == "new":
+            formats.append({
+                "range": f"A{row_num}:Z{row_num}",
+                "format": red_format
+            })
+
+    if formats:
+        # Uses a batch request to execute all formatting requests in a single API call
+        ws.batch_format(formats)
+        print(f"Successfully color-coded {len(formats)} trend rows.")
