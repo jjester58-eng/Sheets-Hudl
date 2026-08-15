@@ -63,10 +63,20 @@ def validate_required_tabs(spreadsheet: gspread.Spreadsheet, required: List[str]
         raise RuntimeError(f"Required tab(s) not found: {missing}")
 
 
-def load_sheet_as_df(spreadsheet: gspread.Spreadsheet, tab_name: str) -> pd.DataFrame:
-    """Load a sheet into a DataFrame and leave all raw values intact for later normalization."""
+def load_sheet_as_df(
+    spreadsheet: gspread.Spreadsheet,
+    tab_name: str
+) -> pd.DataFrame:
+    """Load a Google Sheet tab into a DataFrame.
+
+    Handles duplicate column headers so pandas always returns a Series
+    when accessing df[col].
+    """
     ws = spreadsheet.worksheet(tab_name)
-    print(f"Reading '{tab_name}': {ws.row_count} rows x {ws.col_count} cols")
+    print(
+        f"Reading '{tab_name}': "
+        f"{ws.row_count} rows x {ws.col_count} cols"
+    )
 
     try:
         rows = ws.get_all_values()
@@ -78,20 +88,80 @@ def load_sheet_as_df(spreadsheet: gspread.Spreadsheet, tab_name: str) -> pd.Data
         print(f"Warning: '{tab_name}' is completely empty.")
         return pd.DataFrame()
 
-    header_idx = next((i for i, r in enumerate(rows) if any(cell.strip() for cell in r)), 0)
+    # Find the first non-empty row and use it as the header row.
+    header_idx = next(
+        (
+            i
+            for i, row in enumerate(rows)
+            if any(str(cell).strip() for cell in row)
+        ),
+        0,
+    )
+
     headers = [str(col).strip() for col in rows[header_idx]]
+
+    # Make duplicate headers unique.
+    # Example:
+    #   PLAY TYPE
+    #   PLAY TYPE
+    #
+    # becomes:
+    #   PLAY TYPE
+    #   PLAY TYPE_1
+    seen = {}
+    unique_headers = []
+
+    for header in headers:
+        if header in seen:
+            seen[header] += 1
+            unique_headers.append(
+                f"{header}_{seen[header]}"
+            )
+        else:
+            seen[header] = 0
+            unique_headers.append(header)
+
+    duplicates = [
+        header
+        for header, count in seen.items()
+        if count > 0
+    ]
+
+    if duplicates:
+        print(
+            f"WARNING: Duplicate headers found in "
+            f"'{tab_name}': {duplicates}"
+        )
+        print(f"Original headers: {headers}")
+        print(f"Unique headers:   {unique_headers}")
+
     data = rows[header_idx + 1:]
 
-    df = pd.DataFrame(data, columns=headers)
-    for col in df.columns:
-        df[col] = df[col].astype(str).str.strip()
+    df = pd.DataFrame(
+        data,
+        columns=unique_headers
+    )
 
-    print(f"'{tab_name}': {len(df)} data rows loaded")
+    # Convert every column to stripped strings.
+    for col in df.columns:
+        df[col] = (
+            df[col]
+            .astype(str)
+            .str.strip()
+        )
+
+    print(
+        f"'{tab_name}': "
+        f"{len(df)} data rows loaded"
+    )
+
     if df.empty:
-        print(f"Warning: '{tab_name}' has no data rows yet.")
+        print(
+            f"Warning: '{tab_name}' "
+            "has no data rows yet."
+        )
 
     return df
-
 
 def load_defense_live_df(spreadsheet: gspread.Spreadsheet) -> pd.DataFrame:
     """Load ODK and keep only defensive rows, then normalize to canonical Run/Pass values."""
