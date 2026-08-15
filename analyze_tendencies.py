@@ -124,7 +124,21 @@ def main() -> None:
     print(f"  Report rows: {len(rows)}")
 
     print("Writing to Google Sheets...")
+    print("========== BEFORE WRITE ==========")
+    print(f"Report rows type: {type(rows)}")
+    print(f"Report row count: {len(rows)}")
+
+    if rows:
+        print(f"First row: {rows[0]}")
+        print(f"Last row: {rows[-1]}")
+    else:
+        print("REPORT IS EMPTY")
+
     ws = sheets.write_report(spreadsheet, rows)
+
+    print("========== AFTER WRITE ==========")
+    print(f"Worksheet returned: {ws.title if ws else None}")
+
     if ws is None:
         print("ERROR: Failed to write report.")
         sys.exit(1)
