@@ -185,6 +185,9 @@ def load_defense_live_df(spreadsheet: gspread.Spreadsheet) -> pd.DataFrame:
         df[col_odk].astype(str).str.upper().str.contains("D", na=False)
     ].reset_index(drop=True)
 
+    # Normalize column names so downstream analysis finds canonical columns
+    live_df = _normalize_odk_dataframe_columns(live_df)
+
     print(f"'{config.ODK_SHEET_NAME}': {len(live_df)} defensive rows (ODK contains 'D')")
     return live_df
 
