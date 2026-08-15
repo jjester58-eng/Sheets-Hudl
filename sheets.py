@@ -75,6 +75,21 @@ def load_sheet_as_df(spreadsheet: gspread.Spreadsheet, tab_name: str) -> pd.Data
     return df
 
 
+def load_defense_live_df(spreadsheet: gspread.Spreadsheet) -> pd.DataFrame:
+    """Loads ODK - the single source of truth for live data - and returns
+    only the defensive snaps (ODK column == 'D'). No other tab (For OFF,
+    OFF PLAY SHEET, DEF CALL SHEET, ALL INFO SHEET) is read for the live
+    side of the report."""
+    df = load_sheet_as_df(spreadsheet, config.ODK_SHEET_NAME)
+    if df.empty or config.COL_SIDE not in df.columns:
+        print(f"Warning: '{config.ODK_SHEET_NAME}' is empty or missing the '{config.COL_SIDE}' column.")
+        return df
+
+    live_df = df[df[config.COL_SIDE].astype(str).str.strip() == config.SIDE_DEFENSE].reset_index(drop=True)
+    print(f"'{config.ODK_SHEET_NAME}': {len(live_df)} defensive rows (ODK == '{config.SIDE_DEFENSE}')")
+    return live_df
+
+
 def write_report(spreadsheet: gspread.Spreadsheet, rows: List[List[str]]) -> gspread.Worksheet:
     """Clears (or creates) the output tab and writes the report starting
     at A1. Every row is padded to the same width so the write is a clean
@@ -230,39 +245,3 @@ def apply_trend_formatting(ws: gspread.Worksheet, trend_types: List[str]) -> Non
     if formats:
         ws.batch_format(formats)
         print(f"Marked {len(formats)} trend rows.")
-
-
-# =====================================================================
-# UTILITY HELPER FOR YOUR PROCESSING (Use this inside analysis.py)
-# =====================================================================
-def map_down_and_distance(down: int, distance: int) -> str:
-    """
-    Translates raw Down and Distance numerical integers into your specific
-    coaching framework nomenclature labels.
-    """
-    d_int = int(down)
-    dist_int = int(distance)
-    
-    if d_int == 4:
-        return "4th Down"
-        
-    if d_int == 1:
-        if dist_int >= 11:
-            return "1st and Long"
-        return "1st and Med"
-        
-    if d_int == 2:
-        if dist_int <= 3:
-            return "2nd and Short"
-        elif 4 <= dist_int <= 7:
-            return "2nd and Med"
-        return "2nd and Long"
-        
-    if d_int == 3:
-        if dist_int <= 3:
-            return "3rd & Short"
-        elif 4 <= dist_int <= 7:
-            return "3rd & Med"
-        return "3rd and Long"
-        
-    return f"{d_int} no classification"

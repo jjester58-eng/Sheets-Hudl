@@ -122,13 +122,32 @@ def _down_distance_label(down: Optional[float], dist_bucket: str) -> str:
     return f"{config.DOWN_ORDINALS[int(down)]} & {dist_bucket}"
 
 
+def _yards_from_own_goal(v: Optional[float]) -> Optional[float]:
+    """Converts the coach's signed YARD LN value into a continuous 0-100
+    scale measured from the offense's own goal line.
+
+    Convention (offense perspective): own side is negative, magnitude =
+    yards from the offense's own goal (-1 = own 1, -49 = near midfield on
+    own side). Opponent side is positive, magnitude = yards from the
+    OPPONENT's goal, counting down (49 = just past midfield, 1 = opponent's
+    1-yard line, 50 = touchdown... in practice snaps stop before 0/50).
+
+    Examples: -10 -> 10, 45 -> 55, -45 -> 45, 5 -> 95.
+    Returns None if v is missing.
+    """
+    if pd.isna(v):
+        return None
+    return -v if v < 0 else 100 - v
+
+
 def _field_zone(position: Optional[float]) -> str:
-    """Maps a signed field position value to a named zone. Returns
-    'Unknown' if the value doesn't fall in any configured zone."""
-    if pd.isna(position):
+    """Maps a raw YARD LN value to a named zone via the 0-100 conversion.
+    Returns 'Unknown' if the value doesn't fall in any configured zone."""
+    y = _yards_from_own_goal(position)
+    if y is None:
         return "Unknown"
     for zone_name, low, high in config.FIELD_ZONES:
-        if low <= position < high:
+        if low <= y < high:
             return zone_name
     return "Unknown"
 
@@ -731,7 +750,7 @@ def build_down_distance_expectations(scout_df: pd.DataFrame, live_df: pd.DataFra
         scout_df, live_df, "DOWN_DISTANCE_LABEL", _down_distance_labels()
     )
 
-    # Overall distance buckets (any down)  Long, Medium, Short
+    # Overall distance buckets (any down)  Long, Medium, Short
     for bucket in ("Long", "Medium", "Short"):
         scout_subset = (
             scout_df[scout_df["DIST_BUCKET"] == bucket]

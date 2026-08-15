@@ -16,36 +16,38 @@ from typing import List, Tuple
 # Google Sheets tab names
 # ---------------------------------------------------------------------------
 
-SOURCE_SHEET_NAME: str = "ALL INFO SHEET"   # this week's live game (charted in real time)
+ODK_SHEET_NAME: str = "ODK"                 # single source of truth for live data
 SCOUT_SHEET_NAME: str = "WEEKLY DATA"       # 3+ weeks of scouted opponent film
 OUTPUT_SHEET_NAME: str = "DEF ANALYSIS"     # where the report gets written
 
 # ---------------------------------------------------------------------------
-# Column names as they appear in the sheet (A:P)
+# Column names as they appear in the ODK sheet
 # ---------------------------------------------------------------------------
 
 COL_PLAY_NUM: str = "PLAY #"
-COL_SERIES: str = "SERIES"
+COL_SIDE: str = "ODK"           # contains "O" / "D" / "K"
 COL_DOWN: str = "DN"
 COL_DISTANCE: str = "DIST"
-COL_BACKFIELD: str = "BACKFIELD"
-COL_FORMATION: str = "OFF FORM"
-COL_PLAY_CALL: str = "OFF PLAY"
-COL_PROTECTION: str = "PROTECTION"
-COL_PLAY_TYPE: str = "PLAY TYPE"        # expected values: "Run" / "Pass"
+COL_HASH: str = "HASH"
 COL_GAIN_LOSS: str = "GN/LS"
-COL_FRONT: str = "FRONT"
+COL_FIELD_POSITION: str = "YARD LN"     # signed yard line, offense perspective
+COL_PLAY_TYPE: str = "PLAY TYPE"        # expected values: "Run" / "Pass"
+COL_RESULT: str = "Result"
+COL_FORMATION: str = "OFF FORM"
+COL_DEFENSE: str = "Defense"
+COL_MOTION: str = "Motion"
+COL_PLAY_CALL: str = "OFF PLAY"
+COL_RPO: str = "RPO"
+COL_PLAY_DIR: str = "PLAY DIR"
 COL_STUNT: str = "STUNT"
-COL_BLITZ: str = "BLITZ"
 COL_COVERAGE: str = "COV"
-COL_STR_WEAK: str = "STR/WK"
-COL_DEF_NOTES: str = "DEF NOTES"
+COL_BLITZ: str = "BLITZ"
 
-# Optional column - not present in the sheet yet. If a coach adds a column
-# with this name (using the signed field-position system described below),
-# the field position section will pick it up automatically. Until then,
-# that section is skipped with a clear message instead of guessing.
-COL_FIELD_POSITION: str = "FIELD POS"
+# Present in WEEKLY DATA but not ODK - harmless if unused.
+COL_BACKFIELD: str = "BACKFIELD"
+COL_PROTECTION: str = "PROTECTION"
+
+SIDE_DEFENSE: str = "D"
 
 # Values expected in COL_PLAY_TYPE
 PLAY_TYPE_RUN: str = "Run"
@@ -81,20 +83,20 @@ TOP_N_PLAYS: int = 3
 # ---------------------------------------------------------------------------
 # Field position zones
 # ---------------------------------------------------------------------------
-# Field position convention (matches the coach's own numbering system):
-#   -50 .......... 0 (50 yard line) .......... +50
-#   negative = own side of the field, positive = opponent's side.
-#
-# Zone boundaries below are a starting convention - adjust freely if the
-# coach's actual zone cutoffs differ. Each tuple is:
-#   (zone_name, min_value_inclusive, max_value_exclusive)
+# ODK's YARD LN uses the coach's own convention: own side negative (-1 =
+# own 1, -49 = own 49, near midfield), opponent side positive counting DOWN
+# (49 = just past midfield, 1 = opponent's 1, 50 = midfield either sign).
+# Internally this gets converted to a continuous 0-100 "yards from own goal
+# line" scale before zoning (see analysis._yards_from_own_goal), so these
+# boundaries are plain 0-100 numbers, not raw YARD LN values.
+# Adjust freely - these are a starting convention, not gospel.
 FIELD_ZONES: List[Tuple[str, int, int]] = [
-    ("Own 1-20", -50, -30),
-    ("Own 21-50", -30, -5),
-    ("Midfield", -5, 5),
-    ("Opponent Territory", 5, 30),
-    ("Red Zone", 30, 45),
-    ("Goal Line", 45, 51),  # 51 so +50 itself is included
+    ("Own 1-20", 0, 20),
+    ("Own 21-49", 20, 45),
+    ("Midfield", 45, 55),
+    ("Opponent Territory", 55, 70),
+    ("Red Zone", 70, 99),
+    ("Goal Line", 99, 101),
 ]
 
 # ---------------------------------------------------------------------------
