@@ -23,13 +23,48 @@ import pandas as pd
 from google.oauth2.service_account import Credentials
 
 import config
+import analysis
+
+
+def get_client() -> gspread.Client:
+    """Return an authenticated Google Sheets client from the configured env vars."""
+    creds_raw = os.environ.get(config.ENV_GOOGLE_CREDS)
+    spreadsheet_id = os.environ.get(config.ENV_SPREADSHEET_ID)
+    if not creds_raw:
+        raise RuntimeError(
+            f"Missing {config.ENV_GOOGLE_CREDS} environment variable. "
+            "Set it to the service-account JSON string before running the report."
+        )
+    if not spreadsheet_id:
+        raise RuntimeError(
+            f"Missing {config.ENV_SPREADSHEET_ID} environment variable. "
+            "Set it to the target Google Sheet ID before running the report."
+        )
+
+    creds_dict = json.loads(creds_raw)
+    creds = Credentials.from_service_account_info(creds_dict, scopes=config.GOOGLE_SCOPES)
+    return gspread.authorize(creds)
+
+
+def open_spreadsheet(gc: gspread.Client) -> gspread.Spreadsheet:
+    """Open the target spreadsheet using the configured Spreadsheet ID."""
+    spreadsheet_id = os.environ[config.ENV_SPREADSHEET_ID].strip()
+    spreadsheet = gc.open_by_key(spreadsheet_id)
+    print(f"Opened spreadsheet: '{spreadsheet.title}'")
+    return spreadsheet
+
+
+def validate_required_tabs(spreadsheet: gspread.Spreadsheet, required: List[str]) -> None:
+    """Confirm required tabs exist before analysis runs."""
+    existing_titles = [ws.title for ws in spreadsheet.worksheets()]
+    print(f"Tabs found in spreadsheet: {existing_titles}")
+    missing = [name for name in required if name not in existing_titles]
+    if missing:
+        raise RuntimeError(f"Required tab(s) not found: {missing}")
 
 
 def load_sheet_as_df(spreadsheet: gspread.Spreadsheet, tab_name: str) -> pd.DataFrame:
-    """Loads a tab into a DataFrame using raw values (not get_all_records),
-    so a blank leading row or a stray duplicate header cell doesn't silently
-    drop data. Cell values are stripped of surrounding whitespace; no type
-    casting happens here - analysis.add_situational_columns() owns that."""
+    """Load a sheet into a DataFrame and leave all raw values intact for later normalization."""
     ws = spreadsheet.worksheet(tab_name)
     print(f"Reading '{tab_name}': {ws.row_count} rows x {ws.col_count} cols")
 
@@ -43,7 +78,6 @@ def load_sheet_as_df(spreadsheet: gspread.Spreadsheet, tab_name: str) -> pd.Data
         print(f"Warning: '{tab_name}' is completely empty.")
         return pd.DataFrame()
 
-    # Use the first non-blank row as the header row.
     header_idx = next((i for i, r in enumerate(rows) if any(cell.strip() for cell in r)), 0)
     headers = [str(col).strip() for col in rows[header_idx]]
     data = rows[header_idx + 1:]
@@ -60,32 +94,25 @@ def load_sheet_as_df(spreadsheet: gspread.Spreadsheet, tab_name: str) -> pd.Data
 
 
 def load_defense_live_df(spreadsheet: gspread.Spreadsheet) -> pd.DataFrame:
-    """Loads ODK - the single source of truth for live data - and returns
-    only the defensive snaps (ODK column exactly 'D'). No other tab is read
-    for the live side of the report, and nothing here touches PLAY TYPE
-    values - that normalization happens once, in analyze_tendencies.py, via
-    analysis.add_situational_columns()."""
+    """Load ODK and keep only defensive rows, then normalize to canonical Run/Pass values."""
     df = load_sheet_as_df(spreadsheet, config.ODK_SHEET_NAME)
     if df.empty:
         return df
 
     if config.COL_SIDE not in df.columns:
-        print(f"ERROR: '{config.ODK_SHEET_NAME}' has no '{config.COL_SIDE}' column. "
-              f"Found columns: {list(df.columns)}")
+        print(f"ERROR: '{config.ODK_SHEET_NAME}' has no '{config.COL_SIDE}' column. Found columns: {list(df.columns)}")
         return df
 
-    live_df = df[df[config.COL_SIDE].str.upper() == config.SIDE_DEFENSE.upper()].reset_index(drop=True)
-    print(f"'{config.ODK_SHEET_NAME}': {len(live_df)} defensive rows (ODK == '{config.SIDE_DEFENSE}')")
+    live_df = df[df[config.COL_SIDE].astype(str).str.upper().str.contains('D', na=False)].reset_index(drop=True)
+    print(f"'{config.ODK_SHEET_NAME}': {len(live_df)} defensive rows (ODK contains 'D')")
 
-    # Diagnostic: show exactly what raw PLAY TYPE values are coming in, so a
-    # casing/shorthand mismatch (e.g. "RUN", "R") is visible in the logs
-    # instead of silently producing a 0/0 Run-Pass split downstream.
     if config.COL_PLAY_TYPE in live_df.columns:
         raw_values = live_df[config.COL_PLAY_TYPE].value_counts(dropna=False)
         print(f"Raw '{config.COL_PLAY_TYPE}' values in defensive rows: {raw_values.to_dict()}")
+        live_df = analysis.add_situational_columns(live_df)
+        print(f"Normalized defensive play types: {live_df[config.COL_PLAY_TYPE].value_counts(dropna=False).to_dict()}")
     else:
-        print(f"WARNING: '{config.COL_PLAY_TYPE}' column not found in ODK. "
-              f"Found columns: {list(live_df.columns)}")
+        print(f"WARNING: '{config.COL_PLAY_TYPE}' column not found in ODK. Found columns: {list(live_df.columns)}")
 
     return live_df
 
