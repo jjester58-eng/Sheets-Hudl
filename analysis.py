@@ -67,6 +67,21 @@ class FormationSummary:
 # Column prep
 # ---------------------------------------------------------------------------
 
+def _normalize_play_type(value):
+    """Normalizes the raw sheet Play Type value so downstream comparisons
+    always see canonical 'Run'/'Pass' values regardless of casing or stray
+    whitespace from Google Sheets."""
+    if pd.isna(value):
+        return value
+
+    text = str(value).strip().lower()
+    if text in {"run", "rush"}:
+        return config.PLAY_TYPE_RUN
+    if text in {"pass", "throw", "p"}:
+        return config.PLAY_TYPE_PASS
+    return str(value).strip()
+
+
 def add_situational_columns(df: pd.DataFrame) -> pd.DataFrame:
     """Adds derived columns used throughout the analysis: a down/distance
     bucket label and (if the data supports it) a field position zone.
@@ -77,6 +92,9 @@ def add_situational_columns(df: pd.DataFrame) -> pd.DataFrame:
         return df
 
     df = df.copy()
+
+    if config.COL_PLAY_TYPE in df.columns:
+        df[config.COL_PLAY_TYPE] = df[config.COL_PLAY_TYPE].map(_normalize_play_type)
 
     if config.COL_GAIN_LOSS in df.columns:
         df[config.COL_GAIN_LOSS] = pd.to_numeric(df[config.COL_GAIN_LOSS], errors="coerce")
