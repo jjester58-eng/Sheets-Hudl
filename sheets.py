@@ -20,6 +20,50 @@ from google.oauth2.service_account import Credentials
 import config
 
 
+def resolve_odk_columns(df: pd.DataFrame):
+    """Returns the side and play-type columns used in ODK, supporting both
+    canonical headers and the actual spreadsheet layout where ODK is in column B
+    and Play Type is in column H.
+    """
+    if df.empty:
+        return None, None
+
+    side_col = next(
+        (col for col in df.columns if str(col).strip().upper() == config.COL_SIDE),
+        None,
+    )
+    if side_col is None and len(df.columns) >= 2:
+        side_col = df.columns[1]
+
+    play_col = next(
+        (col for col in df.columns if str(col).strip().upper().replace(" ", "") == "PLAYTYPE"),
+        None,
+    )
+    if play_col is None and len(df.columns) >= 8:
+        play_col = df.columns[7]
+
+    return side_col, play_col
+
+
+def _normalize_odk_dataframe_columns(df: pd.DataFrame) -> pd.DataFrame:
+    """Renames the detected ODK columns to the canonical names used elsewhere
+    in the project so downstream code need not care about raw spreadsheet layout.
+    """
+    if df.empty:
+        return df
+
+    side_col, play_col = resolve_odk_columns(df)
+    if side_col is None and play_col is None:
+        return df
+
+    renamed = df.copy()
+    if side_col is not None and side_col != config.COL_SIDE:
+        renamed = renamed.rename(columns={side_col: config.COL_SIDE})
+    if play_col is not None and play_col != config.COL_PLAY_TYPE:
+        renamed = renamed.rename(columns={play_col: config.COL_PLAY_TYPE})
+    return renamed
+
+
 def get_client() -> gspread.Client:
     """Authenticates with the service account and returns a gspread client."""
     creds_json = os.environ[config.ENV_GOOGLE_CREDS]
@@ -130,48 +174,18 @@ def load_sheet_as_df(spreadsheet: gspread.Spreadsheet, tab_name: str) -> pd.Data
 
 
 def load_defense_live_df(spreadsheet: gspread.Spreadsheet) -> pd.DataFrame:
-    """
-    Loads ODK - the single source of truth for live data - and returns
-    only the defensive snaps (ODK column == 'D'). Normalizes matching logic
-    case-insensitively.
-    """
+    """Loads ODK sheet and filters for defensive plays (Column B containing 'D')."""
     df = load_sheet_as_df(spreadsheet, config.ODK_SHEET_NAME)
-
     if df.empty:
-        print(f"Warning: '{config.ODK_SHEET_NAME}' is empty.")
         return df
 
-    target_col = str(config.COL_SIDE).strip()
+    col_odk = config.COL_SIDE if config.COL_SIDE in df.columns else df.columns[1]
 
-    if target_col not in df.columns:
-        print(
-            f"ERROR: Column '{target_col}' not found in '{config.ODK_SHEET_NAME}'. "
-            f"Available columns are: {list(df.columns)}"
-        )
-        return pd.DataFrame()
+    live_df = df[
+        df[col_odk].astype(str).str.upper().str.contains("D", na=False)
+    ].reset_index(drop=True)
 
-    target_val = str(config.SIDE_DEFENSE).strip().upper()
-
-    # Robust case-insensitive and whitespace-stripped matching for ODK == 'D'
-    mask = (
-        df[target_col]
-        .astype(str)
-        .str.strip()
-        .str.upper() == target_val
-    )
-
-    live_df = df[mask].reset_index(drop=True)
-    print(
-        f"'{config.ODK_SHEET_NAME}': {len(live_df)} defensive rows "
-        f"(Matching '{target_col}' == '{target_val}')"
-    )
-
-    # Diagnostic print for live Play Type dropdown options
-    play_type_col = getattr(config, "COL_PLAY_TYPE", "PLAY TYPE")
-    if play_type_col in live_df.columns:
-        unique_plays = live_df[play_type_col].unique()
-        print(f"Live ODK '{play_type_col}' dropdown values detected: {list(unique_plays)}")
-
+    print(f"'{config.ODK_SHEET_NAME}': {len(live_df)} defensive rows (ODK contains 'D')")
     return live_df
 
 

@@ -20,6 +20,49 @@ from google.oauth2.service_account import Credentials
 import config
 
 
+def resolve_odk_columns(df: pd.DataFrame):
+    """Returns the side and play-type columns used in ODK, supporting both
+    canonical headers and the actual spreadsheet layout where ODK is in column B
+    and Play Type is in column H.
+    """
+    if df.empty:
+        return None, None
+
+    side_col = next(
+        (col for col in df.columns if str(col).strip().upper() == config.COL_SIDE),
+        None,
+    )
+    if side_col is None and len(df.columns) >= 2:
+        side_col = df.columns[1]
+
+    play_col = next(
+        (col for col in df.columns if str(col).strip().upper().replace(" ", "") == "PLAYTYPE"),
+        None,
+    )
+    if play_col is None and len(df.columns) >= 8:
+        play_col = df.columns[7]
+
+    return side_col, play_col
+
+
+def _normalize_odk_dataframe_columns(df: pd.DataFrame) -> pd.DataFrame:
+    """Renames the detected ODK columns to the canonical names used elsewhere
+    in the project so downstream code need not care about raw spreadsheet layout."""
+    if df.empty:
+        return df
+
+    side_col, play_col = resolve_odk_columns(df)
+    if side_col is None and play_col is None:
+        return df
+
+    renamed = df.copy()
+    if side_col is not None and side_col != config.COL_SIDE:
+        renamed = renamed.rename(columns={side_col: config.COL_SIDE})
+    if play_col is not None and play_col != config.COL_PLAY_TYPE:
+        renamed = renamed.rename(columns={play_col: config.COL_PLAY_TYPE})
+    return renamed
+
+
 def get_client() -> gspread.Client:
     """Authenticates with the service account and returns a gspread client."""
     creds_json = os.environ[config.ENV_GOOGLE_CREDS]
@@ -79,13 +122,20 @@ def load_defense_live_df(spreadsheet: gspread.Spreadsheet) -> pd.DataFrame:
     """Loads ODK - the single source of truth for live data - and returns
     only the defensive snaps (ODK column == 'D'). No other tab (For OFF,
     OFF PLAY SHEET, DEF CALL SHEET, ALL INFO SHEET) is read for the live
-    side of the report."""
+    side of the report. It also supports the column layout where ODK is in
+    B and Play Type is in H.
+    """
     df = load_sheet_as_df(spreadsheet, config.ODK_SHEET_NAME)
-    if df.empty or config.COL_SIDE not in df.columns:
-        print(f"Warning: '{config.ODK_SHEET_NAME}' is empty or missing the '{config.COL_SIDE}' column.")
+    if df.empty:
+        print(f"Warning: '{config.ODK_SHEET_NAME}' is empty.")
         return df
 
-    live_df = df[df[config.COL_SIDE].astype(str).str.strip() == config.SIDE_DEFENSE].reset_index(drop=True)
+    df = _normalize_odk_dataframe_columns(df)
+    if config.COL_SIDE not in df.columns:
+        print(f"Warning: '{config.ODK_SHEET_NAME}' is missing the '{config.COL_SIDE}' column.")
+        return df
+
+    live_df = df[df[config.COL_SIDE].astype(str).str.strip().str.upper() == config.SIDE_DEFENSE.upper()].reset_index(drop=True)
     print(f"'{config.ODK_SHEET_NAME}': {len(live_df)} defensive rows (ODK == '{config.SIDE_DEFENSE}')")
     return live_df
 
