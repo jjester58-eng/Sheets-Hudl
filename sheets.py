@@ -55,10 +55,45 @@ def validate_required_tabs(spreadsheet: gspread.Spreadsheet, required: List[str]
         sys.exit(1)
 
 
+def _clean_dataframe_types(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Cleans DataFrame headers and automatically casts key football columns 
+    (Down, Distance, Yards Gained, etc.) to numeric types, and normalizes 
+    string columns like PLAY TYPE so math operations and filters don't fail.
+    """
+    if df.empty:
+        return df
+
+    # Strip white space from column names
+    df.columns = df.columns.astype(str).str.strip()
+
+    # Identify potential numeric down & distance columns dynamically
+    numeric_candidates = [
+        getattr(config, "COL_DOWN", "DN"),
+        getattr(config, "COL_DIST", "DIST"),
+        getattr(config, "COL_DISTANCE", "DISTANCE"),
+        getattr(config, "COL_GAIN", "GN"),
+        getattr(config, "COL_YARDS", "YARDS"),
+        "DOWN", "DIST", "DISTANCE", "DN", "GN", "YARDS"
+    ]
+
+    for col in df.columns:
+        # Cast numeric candidates to float/int safely
+        if col.upper() in [c.upper() for c in numeric_candidates if c]:
+            df[col] = pd.to_numeric(df[col].astype(str).str.strip(), errors="coerce").fillna(0)
+        
+        # Clean string dropdown columns (like PLAY TYPE, OFF PLAY TYPE, FORMATION)
+        else:
+            df[col] = df[col].astype(str).str.strip()
+
+    return df
+
+
 def load_sheet_as_df(spreadsheet: gspread.Spreadsheet, tab_name: str) -> pd.DataFrame:
     """
     Loads a tab into a DataFrame safely using raw matrix values.
-    This prevents missing header crashes and handles blank padding cells.
+    This prevents missing header crashes, cleans up dropdown spacing,
+    and converts numeric columns automatically.
     """
     ws = spreadsheet.worksheet(tab_name)
     print(f"Reading '{tab_name}': {ws.row_count} rows x {ws.col_count} cols")
@@ -73,19 +108,18 @@ def load_sheet_as_df(spreadsheet: gspread.Spreadsheet, tab_name: str) -> pd.Data
         print(f"Warning: '{tab_name}' is completely empty.")
         return pd.DataFrame()
 
-    # Locate the header row (first row with non-empty content)
+    # Locate the header row (first non-empty row)
     header_idx = 0
     for i, r in enumerate(rows):
         if any(cell.strip() for cell in r):
             header_idx = i
             break
 
-    # Strip whitespace from header strings
     headers = [str(col).strip() for col in rows[header_idx]]
     data = rows[header_idx + 1 :]
 
     df = pd.DataFrame(data, columns=headers)
-    df.columns = df.columns.str.strip()
+    df = _clean_dataframe_types(df)
 
     print(f"'{tab_name}': {len(df)} data rows loaded")
 
@@ -98,8 +132,8 @@ def load_sheet_as_df(spreadsheet: gspread.Spreadsheet, tab_name: str) -> pd.Data
 def load_defense_live_df(spreadsheet: gspread.Spreadsheet) -> pd.DataFrame:
     """
     Loads ODK - the single source of truth for live data - and returns
-    only the defensive snaps (ODK column == 'D'). String matching is normalized
-    to ensure case-sensitivity or extra spaces do not drop rows.
+    only the defensive snaps (ODK column == 'D'). Normalizes matching logic
+    case-insensitively.
     """
     df = load_sheet_as_df(spreadsheet, config.ODK_SHEET_NAME)
 
@@ -112,12 +146,13 @@ def load_defense_live_df(spreadsheet: gspread.Spreadsheet) -> pd.DataFrame:
     if target_col not in df.columns:
         print(
             f"ERROR: Column '{target_col}' not found in '{config.ODK_SHEET_NAME}'. "
-            f"Available columns: {list(df.columns)}"
+            f"Available columns are: {list(df.columns)}"
         )
         return pd.DataFrame()
 
     target_val = str(config.SIDE_DEFENSE).strip().upper()
 
+    # Robust case-insensitive and whitespace-stripped matching for ODK == 'D'
     mask = (
         df[target_col]
         .astype(str)
@@ -131,7 +166,56 @@ def load_defense_live_df(spreadsheet: gspread.Spreadsheet) -> pd.DataFrame:
         f"(Matching '{target_col}' == '{target_val}')"
     )
 
+    # Diagnostic print for live Play Type dropdown options
+    play_type_col = getattr(config, "COL_PLAY_TYPE", "PLAY TYPE")
+    if play_type_col in live_df.columns:
+        unique_plays = live_df[play_type_col].unique()
+        print(f"Live ODK '{play_type_col}' dropdown values detected: {list(unique_plays)}")
+
     return live_df
+
+
+def get_down_dist_splits(df: pd.DataFrame, down: int, min_dist: int, max_dist: int) -> dict:
+    """
+    Helper function to calculate down & distance run/pass splits cleanly.
+    Fully case-insensitive and works for both Scout and Live ODK data.
+    """
+    play_col = getattr(config, "COL_PLAY_TYPE", "PLAY TYPE")
+    dn_col = getattr(config, "COL_DOWN", "DN")
+    dist_col = getattr(config, "COL_DIST", "DIST")
+
+    if df.empty or play_col not in df.columns or dn_col not in df.columns or dist_col not in df.columns:
+        return {"snaps": 0, "runs": 0, "passes": 0, "run_pct": 0.0, "pass_pct": 0.0}
+
+    # Extract down and distance as numbers
+    downs = pd.to_numeric(df[dn_col], errors='coerce').fillna(0)
+    dists = pd.to_numeric(df[dist_col], errors='coerce').fillna(0)
+
+    # Upper case Play Type series
+    play_types = df[play_col].astype(str).str.strip().str.upper()
+
+    # Filter mask for down & distance range
+    mask = (downs == down) & (dists >= min_dist) & (dists <= max_dist)
+    filtered_plays = play_types[mask]
+
+    total_snaps = len(filtered_plays)
+    if total_snaps == 0:
+        return {"snaps": 0, "runs": 0, "passes": 0, "run_pct": 0.0, "pass_pct": 0.0}
+
+    # Flexible case-insensitive matching (handles 'RUN', 'Run', 'R', 'PASS', 'Pass', 'P')
+    runs = filtered_plays.str.contains(r'RUN|^R$', regex=True, na=False).sum()
+    passes = filtered_plays.str.contains(r'PASS|^P$', regex=True, na=False).sum()
+
+    run_pct = round((runs / total_snaps) * 100, 1)
+    pass_pct = round((passes / total_snaps) * 100, 1)
+
+    return {
+        "snaps": total_snaps,
+        "runs": runs,
+        "passes": passes,
+        "run_pct": run_pct,
+        "pass_pct": pass_pct
+    }
 
 
 def write_report(spreadsheet: gspread.Spreadsheet, rows: List[List[str]]) -> gspread.Worksheet:
