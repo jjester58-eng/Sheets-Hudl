@@ -5,6 +5,11 @@ Everything that talks to Google Sheets lives here, and nothing else does.
 No football math, no report formatting structure - just authentication, reading
 tabs into DataFrames, writing rows back out, and applying presentation layouts.
 
+Normalization (Run/Pass canonicalization, numeric casting, situational
+buckets) is NOT done here - that's analysis.add_situational_columns()'s job,
+called exactly once by analyze_tendencies.py. Doing it in two places is how
+the Run/Pass split silently broke last time.
+
 Uses gspread exclusively (no manual REST calls).
 """
 
@@ -18,128 +23,13 @@ import pandas as pd
 from google.oauth2.service_account import Credentials
 
 import config
-import analysis
-
-
-def resolve_odk_columns(df: pd.DataFrame):
-    """Returns the side and play-type columns used in ODK, supporting both
-    canonical headers and the actual spreadsheet layout where ODK is in column B
-    and Play Type is in column H.
-    """
-    if df.empty:
-        return None, None
-
-    side_col = next(
-        (col for col in df.columns if str(col).strip().upper() == config.COL_SIDE),
-        None,
-    )
-    if side_col is None and len(df.columns) >= 2:
-        side_col = df.columns[1]
-
-    play_col = next(
-        (col for col in df.columns if str(col).strip().upper().replace(" ", "") == "PLAYTYPE"),
-        None,
-    )
-    if play_col is None and len(df.columns) >= 8:
-        play_col = df.columns[7]
-
-    return side_col, play_col
-
-
-def _normalize_odk_dataframe_columns(df: pd.DataFrame) -> pd.DataFrame:
-    """Renames the detected ODK columns to the canonical names used elsewhere
-    in the project so downstream code need not care about raw spreadsheet layout.
-    """
-    if df.empty:
-        return df
-
-    side_col, play_col = resolve_odk_columns(df)
-    if side_col is None and play_col is None:
-        return df
-
-    renamed = df.copy()
-    if side_col is not None and side_col != config.COL_SIDE:
-        renamed = renamed.rename(columns={side_col: config.COL_SIDE})
-    if play_col is not None and play_col != config.COL_PLAY_TYPE:
-        renamed = renamed.rename(columns={play_col: config.COL_PLAY_TYPE})
-    return renamed
-
-
-def get_client() -> gspread.Client:
-    """Authenticates with the service account and returns a gspread client."""
-    creds_json = os.environ[config.ENV_GOOGLE_CREDS]
-    creds_dict = json.loads(creds_json)
-    creds = Credentials.from_service_account_info(creds_dict, scopes=config.GOOGLE_SCOPES)
-    return gspread.authorize(creds)
-
-
-def open_spreadsheet(gc: gspread.Client) -> gspread.Spreadsheet:
-    """Opens the target spreadsheet, stripping any accidental whitespace from the ID."""
-    raw_id = os.environ[config.ENV_SPREADSHEET_ID]
-    spreadsheet_id = raw_id.strip()
-
-    if raw_id != spreadsheet_id:
-        print("Warning: SPREADSHEET_ID had leading/trailing whitespace - stripped it.")
-
-    print(f"Spreadsheet ID length: {len(spreadsheet_id)}")
-
-    spreadsheet = gc.open_by_key(spreadsheet_id)
-    print(f"Opened spreadsheet: '{spreadsheet.title}'")
-    return spreadsheet
-
-
-def validate_required_tabs(spreadsheet: gspread.Spreadsheet, required: List[str]) -> None:
-    """Confirms every tab in `required` exists before any analysis runs."""
-    existing_titles = [ws.title for ws in spreadsheet.worksheets()]
-    print(f"Tabs found in spreadsheet: {existing_titles}")
-
-    missing = [name for name in required if name not in existing_titles]
-    if missing:
-        print(f"ERROR: required tab(s) not found: {missing}")
-        print(f"Available tabs are: {existing_titles}")
-        sys.exit(1)
-
-
-def _clean_dataframe_types(df: pd.DataFrame) -> pd.DataFrame:
-    """
-    Cleans DataFrame headers and automatically casts key football columns 
-    (Down, Distance, Yards Gained, etc.) to numeric types, and normalizes 
-    string columns like PLAY TYPE so math operations and filters don't fail.
-    """
-    if df.empty:
-        return df
-
-    # Strip white space from column names
-    df.columns = df.columns.astype(str).str.strip()
-
-    # Identify potential numeric down & distance columns dynamically
-    numeric_candidates = [
-        getattr(config, "COL_DOWN", "DN"),
-        getattr(config, "COL_DIST", "DIST"),
-        getattr(config, "COL_DISTANCE", "DISTANCE"),
-        getattr(config, "COL_GAIN", "GN"),
-        getattr(config, "COL_YARDS", "YARDS"),
-        "DOWN", "DIST", "DISTANCE", "DN", "GN", "YARDS"
-    ]
-
-    for col in df.columns:
-        # Cast numeric candidates to float/int safely
-        if col.upper() in [c.upper() for c in numeric_candidates if c]:
-            df[col] = pd.to_numeric(df[col].astype(str).str.strip(), errors="coerce").fillna(0)
-        
-        # Clean string dropdown columns (like PLAY TYPE, OFF PLAY TYPE, FORMATION)
-        else:
-            df[col] = df[col].astype(str).str.strip()
-
-    return df
 
 
 def load_sheet_as_df(spreadsheet: gspread.Spreadsheet, tab_name: str) -> pd.DataFrame:
-    """
-    Loads a tab into a DataFrame safely using raw matrix values.
-    This prevents missing header crashes, cleans up dropdown spacing,
-    and converts numeric columns automatically.
-    """
+    """Loads a tab into a DataFrame using raw values (not get_all_records),
+    so a blank leading row or a stray duplicate header cell doesn't silently
+    drop data. Cell values are stripped of surrounding whitespace; no type
+    casting happens here - analysis.add_situational_columns() owns that."""
     ws = spreadsheet.worksheet(tab_name)
     print(f"Reading '{tab_name}': {ws.row_count} rows x {ws.col_count} cols")
 
@@ -153,21 +43,16 @@ def load_sheet_as_df(spreadsheet: gspread.Spreadsheet, tab_name: str) -> pd.Data
         print(f"Warning: '{tab_name}' is completely empty.")
         return pd.DataFrame()
 
-    # Locate the header row (first non-empty row)
-    header_idx = 0
-    for i, r in enumerate(rows):
-        if any(cell.strip() for cell in r):
-            header_idx = i
-            break
-
+    # Use the first non-blank row as the header row.
+    header_idx = next((i for i, r in enumerate(rows) if any(cell.strip() for cell in r)), 0)
     headers = [str(col).strip() for col in rows[header_idx]]
-    data = rows[header_idx + 1 :]
+    data = rows[header_idx + 1:]
 
     df = pd.DataFrame(data, columns=headers)
-    df = _clean_dataframe_types(df)
+    for col in df.columns:
+        df[col] = df[col].astype(str).str.strip()
 
     print(f"'{tab_name}': {len(df)} data rows loaded")
-
     if df.empty:
         print(f"Warning: '{tab_name}' has no data rows yet.")
 
@@ -175,79 +60,40 @@ def load_sheet_as_df(spreadsheet: gspread.Spreadsheet, tab_name: str) -> pd.Data
 
 
 def load_defense_live_df(spreadsheet: gspread.Spreadsheet) -> pd.DataFrame:
-    """Loads ODK sheet and filters for defensive plays (Column B containing 'D').
-    Normalizes both column names and play type values so downstream code finds
-    canonical "Run"/"Pass" instead of shorthand R/P or other variations.
-    """
+    """Loads ODK - the single source of truth for live data - and returns
+    only the defensive snaps (ODK column exactly 'D'). No other tab is read
+    for the live side of the report, and nothing here touches PLAY TYPE
+    values - that normalization happens once, in analyze_tendencies.py, via
+    analysis.add_situational_columns()."""
     df = load_sheet_as_df(spreadsheet, config.ODK_SHEET_NAME)
     if df.empty:
         return df
 
-    col_odk = config.COL_SIDE if config.COL_SIDE in df.columns else df.columns[1]
+    if config.COL_SIDE not in df.columns:
+        print(f"ERROR: '{config.ODK_SHEET_NAME}' has no '{config.COL_SIDE}' column. "
+              f"Found columns: {list(df.columns)}")
+        return df
 
-    live_df = df[
-        df[col_odk].astype(str).str.upper().str.contains("D", na=False)
-    ].reset_index(drop=True)
+    live_df = df[df[config.COL_SIDE].str.upper() == config.SIDE_DEFENSE.upper()].reset_index(drop=True)
+    print(f"'{config.ODK_SHEET_NAME}': {len(live_df)} defensive rows (ODK == '{config.SIDE_DEFENSE}')")
 
-    # Normalize column names so downstream analysis finds canonical columns
-    live_df = _normalize_odk_dataframe_columns(live_df)
-    
-    # Normalize play type VALUES (R/P/Run/Pass → canonical "Run"/"Pass")
-    live_df = analysis.add_situational_columns(live_df)
+    # Diagnostic: show exactly what raw PLAY TYPE values are coming in, so a
+    # casing/shorthand mismatch (e.g. "RUN", "R") is visible in the logs
+    # instead of silently producing a 0/0 Run-Pass split downstream.
+    if config.COL_PLAY_TYPE in live_df.columns:
+        raw_values = live_df[config.COL_PLAY_TYPE].value_counts(dropna=False)
+        print(f"Raw '{config.COL_PLAY_TYPE}' values in defensive rows: {raw_values.to_dict()}")
+    else:
+        print(f"WARNING: '{config.COL_PLAY_TYPE}' column not found in ODK. "
+              f"Found columns: {list(live_df.columns)}")
 
-    print(f"'{config.ODK_SHEET_NAME}': {len(live_df)} defensive rows (ODK contains 'D')")
     return live_df
 
 
-def get_down_dist_splits(df: pd.DataFrame, down: int, min_dist: int, max_dist: int) -> dict:
-    """
-    Helper function to calculate down & distance run/pass splits cleanly.
-    Fully case-insensitive and works for both Scout and Live ODK data.
-    """
-    play_col = getattr(config, "COL_PLAY_TYPE", "PLAY TYPE")
-    dn_col = getattr(config, "COL_DOWN", "DN")
-    dist_col = getattr(config, "COL_DIST", "DIST")
-
-    if df.empty or play_col not in df.columns or dn_col not in df.columns or dist_col not in df.columns:
-        return {"snaps": 0, "runs": 0, "passes": 0, "run_pct": 0.0, "pass_pct": 0.0}
-
-    # Extract down and distance as numbers
-    downs = pd.to_numeric(df[dn_col], errors='coerce').fillna(0)
-    dists = pd.to_numeric(df[dist_col], errors='coerce').fillna(0)
-
-    # Upper case Play Type series
-    play_types = df[play_col].astype(str).str.strip().str.upper()
-
-    # Filter mask for down & distance range
-    mask = (downs == down) & (dists >= min_dist) & (dists <= max_dist)
-    filtered_plays = play_types[mask]
-
-    total_snaps = len(filtered_plays)
-    if total_snaps == 0:
-        return {"snaps": 0, "runs": 0, "passes": 0, "run_pct": 0.0, "pass_pct": 0.0}
-
-    # Flexible case-insensitive matching (handles 'RUN', 'Run', 'R', 'PASS', 'Pass', 'P')
-    runs = filtered_plays.str.contains(r'RUN|^R$', regex=True, na=False).sum()
-    passes = filtered_plays.str.contains(r'PASS|^P$', regex=True, na=False).sum()
-
-    run_pct = round((runs / total_snaps) * 100, 1)
-    pass_pct = round((passes / total_snaps) * 100, 1)
-
-    return {
-        "snaps": total_snaps,
-        "runs": runs,
-        "passes": passes,
-        "run_pct": run_pct,
-        "pass_pct": pass_pct
-    }
-
-
 def write_report(spreadsheet: gspread.Spreadsheet, rows: List[List[str]]) -> gspread.Worksheet:
-    """
-    Clears (or creates) the output tab and writes the report starting
+    """Clears (or creates) the output tab and writes the report starting
     at A1. Every row is padded to the same width so the write is a clean
-    rectangle. Returns the worksheet object for further formatting.
-    """
+    rectangle. Returns the worksheet object for further formatting."""
     print(f"write_report: {len(rows)} rows")
     if not rows:
         print("ERROR: 0 rows — not clearing tab.")
@@ -342,7 +188,7 @@ def format_report_layout(ws: gspread.Worksheet, total_rows: int, max_cols_letter
                 "format": blue_theme
             })
 
-        # Check for Metric Table Sub-headers (Covers A and B keys too)
+        # Check for Metric Table Sub-headers (Now covers A and B keys too)
         elif "SNAPS" in row_str or "RUN %" in row_str:
             formats.append({
                 "range": f"A{row_num}:{max_cols_letter}{row_num}",

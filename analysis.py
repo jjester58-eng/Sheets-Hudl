@@ -67,24 +67,34 @@ class FormationSummary:
 # Column prep
 # ---------------------------------------------------------------------------
 
+# Raw PLAY TYPE values that map to each canonical type. Add more shorthand
+# here if the sheet ever uses something not covered - this is the ONLY place
+# that needs to change.
+_RUN_TOKENS = {"run", "rush", "r"}
+_PASS_TOKENS = {"pass", "throw", "p", "pa", "ps"}
+
+
 def _normalize_play_type(value):
-    """Normalizes the raw sheet Play Type value so downstream comparisons
-    always see canonical 'Run'/'Pass' values regardless of casing, shorthand,
-    or stray whitespace from Google Sheets."""
+    """Normalizes a raw PLAY TYPE cell to canonical 'Run'/'Pass' regardless
+    of casing, shorthand, or stray whitespace. Anything unrecognized is
+    passed through unchanged (stripped) so it's visible in diagnostics
+    rather than silently disappearing."""
     if pd.isna(value):
         return value
 
     text = str(value).strip().lower()
-    if text in {"run", "rush", "r"}:
+    if text in _RUN_TOKENS:
         return config.PLAY_TYPE_RUN
-    if text in {"pass", "throw", "p", "pa", "ps"}:
+    if text in _PASS_TOKENS:
         return config.PLAY_TYPE_PASS
     return str(value).strip()
 
 
 def add_situational_columns(df: pd.DataFrame) -> pd.DataFrame:
     """Adds derived columns used throughout the analysis: a down/distance
-    bucket label and (if the data supports it) a field position zone.
+    bucket label and (if the data supports it) a field position zone. Also
+    normalizes PLAY TYPE to canonical Run/Pass - this is the ONLY place
+    that normalization happens; sheets.py must not duplicate it.
 
     Safe to call on an empty DataFrame - returns it unchanged.
     """
@@ -94,7 +104,13 @@ def add_situational_columns(df: pd.DataFrame) -> pd.DataFrame:
     df = df.copy()
 
     if config.COL_PLAY_TYPE in df.columns:
+        before = df[config.COL_PLAY_TYPE].value_counts(dropna=False)
         df[config.COL_PLAY_TYPE] = df[config.COL_PLAY_TYPE].map(_normalize_play_type)
+        after = df[config.COL_PLAY_TYPE].value_counts(dropna=False)
+        unmapped = set(after.index) - {config.PLAY_TYPE_RUN, config.PLAY_TYPE_PASS}
+        if unmapped:
+            print(f"WARNING: PLAY TYPE values not recognized as Run/Pass: {unmapped} "
+                  f"(raw values seen: {before.to_dict()})")
 
     if config.COL_GAIN_LOSS in df.columns:
         df[config.COL_GAIN_LOSS] = pd.to_numeric(df[config.COL_GAIN_LOSS], errors="coerce")
@@ -1050,51 +1066,4 @@ def compute_game_plan_score(
         runpass_component=round(runpass_component, 1),
         top_plays_component=round(top_plays_component, 1),
         down_distance_component=round(down_distance_component, 1),
-    )
-
-
-# ---------------------------------------------------------------------------
-# Section 10: Defensive Play Type Analysis (Column B containing 'D', Column H)
-# ---------------------------------------------------------------------------
-
-@dataclass
-class DefPlayTypeAnalysis:
-    total_defensive_plays: int
-    run_count: int
-    run_pct: float
-    pass_count: int
-    pass_pct: float
-
-
-def analyze_def_play_types(df: pd.DataFrame) -> DefPlayTypeAnalysis:
-    """Filters ODK data where Column B (ODK) contains 'D' (defensive plays)
-    and evaluates Column H (Play Type) for RUN vs PASS breakdowns.
-    """
-    if df.empty:
-        return DefPlayTypeAnalysis(0, 0, 0.0, 0, 0.0)
-
-    col_odk = config.COL_SIDE if config.COL_SIDE in df.columns else df.columns[1]
-    col_play_type = config.COL_PLAY_TYPE if config.COL_PLAY_TYPE in df.columns else df.columns[7]
-
-    is_def = df[col_odk].astype(str).str.upper().str.contains("D", na=False)
-    def_df = df[is_def]
-
-    if def_df.empty:
-        return DefPlayTypeAnalysis(0, 0, 0.0, 0, 0.0)
-
-    normalized_types = def_df[col_play_type].map(_normalize_play_type).astype(str).str.upper()
-
-    run_count = int((normalized_types == config.PLAY_TYPE_RUN.upper()).sum())
-    pass_count = int((normalized_types == config.PLAY_TYPE_PASS.upper()).sum())
-    total_plays = run_count + pass_count
-
-    run_pct = round((run_count / total_plays * 100), 1) if total_plays > 0 else 0.0
-    pass_pct = round((pass_count / total_plays * 100), 1) if total_plays > 0 else 0.0
-
-    return DefPlayTypeAnalysis(
-        total_defensive_plays=total_plays,
-        run_count=run_count,
-        run_pct=run_pct,
-        pass_count=pass_count,
-        pass_pct=pass_pct,
     )
