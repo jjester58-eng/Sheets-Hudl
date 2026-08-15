@@ -69,15 +69,15 @@ class FormationSummary:
 
 def _normalize_play_type(value):
     """Normalizes the raw sheet Play Type value so downstream comparisons
-    always see canonical 'Run'/'Pass' values regardless of casing or stray
-    whitespace from Google Sheets."""
+    always see canonical 'Run'/'Pass' values regardless of casing, shorthand,
+    or stray whitespace from Google Sheets."""
     if pd.isna(value):
         return value
 
     text = str(value).strip().lower()
-    if text in {"run", "rush"}:
+    if text in {"run", "rush", "r"}:
         return config.PLAY_TYPE_RUN
-    if text in {"pass", "throw", "p"}:
+    if text in {"pass", "throw", "p", "pa", "ps"}:
         return config.PLAY_TYPE_PASS
     return str(value).strip()
 
@@ -1082,57 +1082,10 @@ def analyze_def_play_types(df: pd.DataFrame) -> DefPlayTypeAnalysis:
     if def_df.empty:
         return DefPlayTypeAnalysis(0, 0, 0.0, 0, 0.0)
 
-    normalized_types = def_df[col_play_type].astype(str).str.strip().str.upper()
+    normalized_types = def_df[col_play_type].map(_normalize_play_type).astype(str).str.upper()
 
-    run_count = int((normalized_types == "RUN").sum())
-    pass_count = int((normalized_types == "PASS").sum())
-    total_plays = run_count + pass_count
-
-    run_pct = round((run_count / total_plays * 100), 1) if total_plays > 0 else 0.0
-    pass_pct = round((pass_count / total_plays * 100), 1) if total_plays > 0 else 0.0
-
-    return DefPlayTypeAnalysis(
-        total_defensive_plays=total_plays,
-        run_count=run_count,
-        run_pct=run_pct,
-        pass_count=pass_count,
-        pass_pct=pass_pct,
-    )
-
-
-# ---------------------------------------------------------------------------
-# Section 10: Defensive Play Type Analysis (Column B containing 'D', Column H)
-# ---------------------------------------------------------------------------
-
-@dataclass
-class DefPlayTypeAnalysis:
-    total_defensive_plays: int
-    run_count: int
-    run_pct: float
-    pass_count: int
-    pass_pct: float
-
-
-def analyze_def_play_types(df: pd.DataFrame) -> DefPlayTypeAnalysis:
-    """Filters ODK data where Column B (ODK) contains 'D' (defensive plays)
-    and evaluates Column H (Play Type) for RUN vs PASS breakdowns.
-    """
-    if df.empty:
-        return DefPlayTypeAnalysis(0, 0, 0.0, 0, 0.0)
-
-    col_odk = config.COL_SIDE if config.COL_SIDE in df.columns else df.columns[1]
-    col_play_type = config.COL_PLAY_TYPE if config.COL_PLAY_TYPE in df.columns else df.columns[7]
-
-    is_def = df[col_odk].astype(str).str.upper().str.contains("D", na=False)
-    def_df = df[is_def]
-
-    if def_df.empty:
-        return DefPlayTypeAnalysis(0, 0, 0.0, 0, 0.0)
-
-    normalized_types = def_df[col_play_type].astype(str).str.strip().str.upper()
-
-    run_count = int((normalized_types == "RUN").sum())
-    pass_count = int((normalized_types == "PASS").sum())
+    run_count = int((normalized_types == config.PLAY_TYPE_RUN.upper()).sum())
+    pass_count = int((normalized_types == config.PLAY_TYPE_PASS.upper()).sum())
     total_plays = run_count + pass_count
 
     run_pct = round((run_count / total_plays * 100), 1) if total_plays > 0 else 0.0

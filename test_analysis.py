@@ -41,3 +41,20 @@ def test_odk_columns_supports_b_and_h_positions():
     assert result.pass_count == 1
     assert result.run_pct == 50.0
     assert result.pass_pct == 50.0
+
+
+def test_defensive_play_type_counts_r_and_p_shorthand():
+    df = pd.DataFrame([
+        ["Game 1", "D", "x", "x", "x", "x", "x", "R"],
+        ["Game 2", "D", "x", "x", "x", "x", "x", "P"],
+        ["Game 3", "D", "x", "x", "x", "x", "x", "Run"],
+        ["Game 4", "O", "x", "x", "x", "x", "x", "Pass"],
+    ], columns=["Game", "ODK", "A", "B", "C", "D", "E", "PLAY TYPE"])
+
+    result = analysis.analyze_def_play_types(df)
+
+    assert result.total_defensive_plays == 3
+    assert result.run_count == 2
+    assert result.pass_count == 1
+    assert result.run_pct == 66.7
+    assert result.pass_pct == 33.3
