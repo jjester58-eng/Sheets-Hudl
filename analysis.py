@@ -63,6 +63,16 @@ class FormationSummary:
     top_pass_plays: List[str]
 
 
+@dataclass
+class DefPlayTypeAnalysis:
+    """Defensive play type breakdown: total snaps, runs vs passes."""
+    total_defensive_plays: int
+    run_count: int
+    pass_count: int
+    run_pct: float
+    pass_pct: float
+
+
 # ---------------------------------------------------------------------------
 # Column prep
 # ---------------------------------------------------------------------------
@@ -325,6 +335,70 @@ def build_summary(df: pd.DataFrame) -> Summary:
         pass_pct=pass_pct,
         explosive_run_count=explosive_run_count,
         explosive_pass_count=explosive_pass_count,
+    )
+
+
+def analyze_def_play_types(df: pd.DataFrame) -> DefPlayTypeAnalysis:
+    """Analyzes play type distribution (run vs pass) for defensive snaps.
+    Filters the input DataFrame for rows where the ODK column contains 'D'
+    (defensive plays), normalizes play type values, then counts and calculates percentages."""
+    if df.empty:
+        return DefPlayTypeAnalysis(
+            total_defensive_plays=0,
+            run_count=0,
+            pass_count=0,
+            run_pct=0.0,
+            pass_pct=0.0,
+        )
+
+    # Filter for defensive plays (ODK column contains 'D')
+    if config.COL_SIDE not in df.columns:
+        return DefPlayTypeAnalysis(
+            total_defensive_plays=0,
+            run_count=0,
+            pass_count=0,
+            run_pct=0.0,
+            pass_pct=0.0,
+        )
+
+    def_df = df[df[config.COL_SIDE].astype(str).str.strip().str.upper() == config.SIDE_DEFENSE.upper()].reset_index(drop=True)
+
+    if def_df.empty:
+        return DefPlayTypeAnalysis(
+            total_defensive_plays=0,
+            run_count=0,
+            pass_count=0,
+            run_pct=0.0,
+            pass_pct=0.0,
+        )
+
+    # Normalize play type values (R/P shorthand, case variants, etc.)
+    if config.COL_PLAY_TYPE in def_df.columns:
+        def_df = def_df.copy()
+        def_df[config.COL_PLAY_TYPE] = def_df[config.COL_PLAY_TYPE].map(_normalize_play_type)
+
+    total = len(def_df)
+    if config.COL_PLAY_TYPE not in def_df.columns:
+        return DefPlayTypeAnalysis(
+            total_defensive_plays=total,
+            run_count=0,
+            pass_count=0,
+            run_pct=0.0,
+            pass_pct=0.0,
+        )
+
+    run_count = int((def_df[config.COL_PLAY_TYPE] == config.PLAY_TYPE_RUN).sum())
+    pass_count = int((def_df[config.COL_PLAY_TYPE] == config.PLAY_TYPE_PASS).sum())
+
+    run_pct = round(run_count / total * 100, 1) if total > 0 else 0.0
+    pass_pct = round(pass_count / total * 100, 1) if total > 0 else 0.0
+
+    return DefPlayTypeAnalysis(
+        total_defensive_plays=total,
+        run_count=run_count,
+        pass_count=pass_count,
+        run_pct=run_pct,
+        pass_pct=pass_pct,
     )
 
 
