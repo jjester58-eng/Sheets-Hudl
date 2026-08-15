@@ -17,7 +17,8 @@ from typing import List, Tuple
 # ---------------------------------------------------------------------------
 
 ODK_SHEET_NAME: str = "ODK"                 # single source of truth for live data
-SCOUT_SHEET_NAME: str = "WEEKLY DATA"       # 3+ weeks of scouted opponent film
+WEEKLY_DATA_SHEET_NAME: str = "WEEKLY DATA"  # 3+ weeks of scouted opponent film
+SCOUT_SHEET_NAME: str = WEEKLY_DATA_SHEET_NAME  # legacy alias retained for compatibility
 OUTPUT_SHEET_NAME: str = "DEF ANALYSIS"     # where the report gets written
 
 # ---------------------------------------------------------------------------
