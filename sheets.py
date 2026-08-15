@@ -56,19 +56,39 @@ def validate_required_tabs(spreadsheet: gspread.Spreadsheet, required: List[str]
 
 
 def load_sheet_as_df(spreadsheet: gspread.Spreadsheet, tab_name: str) -> pd.DataFrame:
-    """Loads a tab into a DataFrame."""
+    """
+    Loads a tab into a DataFrame safely using raw matrix values.
+    This prevents missing header crashes and handles blank padding cells.
+    """
     ws = spreadsheet.worksheet(tab_name)
     print(f"Reading '{tab_name}': {ws.row_count} rows x {ws.col_count} cols")
 
     try:
-        records = ws.get_all_records()
+        rows = ws.get_all_values()
     except gspread.exceptions.APIError as e:
         print(f"ERROR: could not read '{tab_name}': {e}")
         sys.exit(1)
 
-    print(f"'{tab_name}': {len(records)} data rows loaded")
+    if not rows:
+        print(f"Warning: '{tab_name}' is completely empty.")
+        return pd.DataFrame()
 
-    df = pd.DataFrame(records)
+    # Locate the header row (first row with non-empty content)
+    header_idx = 0
+    for i, r in enumerate(rows):
+        if any(cell.strip() for cell in r):
+            header_idx = i
+            break
+
+    # Strip whitespace from header strings
+    headers = [str(col).strip() for col in rows[header_idx]]
+    data = rows[header_idx + 1 :]
+
+    df = pd.DataFrame(data, columns=headers)
+    df.columns = df.columns.str.strip()
+
+    print(f"'{tab_name}': {len(df)} data rows loaded")
+
     if df.empty:
         print(f"Warning: '{tab_name}' has no data rows yet.")
 
@@ -76,24 +96,50 @@ def load_sheet_as_df(spreadsheet: gspread.Spreadsheet, tab_name: str) -> pd.Data
 
 
 def load_defense_live_df(spreadsheet: gspread.Spreadsheet) -> pd.DataFrame:
-    """Loads ODK - the single source of truth for live data - and returns
-    only the defensive snaps (ODK column == 'D'). No other tab (For OFF,
-    OFF PLAY SHEET, DEF CALL SHEET, ALL INFO SHEET) is read for the live
-    side of the report."""
+    """
+    Loads ODK - the single source of truth for live data - and returns
+    only the defensive snaps (ODK column == 'D'). String matching is normalized
+    to ensure case-sensitivity or extra spaces do not drop rows.
+    """
     df = load_sheet_as_df(spreadsheet, config.ODK_SHEET_NAME)
-    if df.empty or config.COL_SIDE not in df.columns:
-        print(f"Warning: '{config.ODK_SHEET_NAME}' is empty or missing the '{config.COL_SIDE}' column.")
+
+    if df.empty:
+        print(f"Warning: '{config.ODK_SHEET_NAME}' is empty.")
         return df
 
-    live_df = df[df[config.COL_SIDE].astype(str).str.strip() == config.SIDE_DEFENSE].reset_index(drop=True)
-    print(f"'{config.ODK_SHEET_NAME}': {len(live_df)} defensive rows (ODK == '{config.SIDE_DEFENSE}')")
+    target_col = str(config.COL_SIDE).strip()
+
+    if target_col not in df.columns:
+        print(
+            f"ERROR: Column '{target_col}' not found in '{config.ODK_SHEET_NAME}'. "
+            f"Available columns: {list(df.columns)}"
+        )
+        return pd.DataFrame()
+
+    target_val = str(config.SIDE_DEFENSE).strip().upper()
+
+    mask = (
+        df[target_col]
+        .astype(str)
+        .str.strip()
+        .str.upper() == target_val
+    )
+
+    live_df = df[mask].reset_index(drop=True)
+    print(
+        f"'{config.ODK_SHEET_NAME}': {len(live_df)} defensive rows "
+        f"(Matching '{target_col}' == '{target_val}')"
+    )
+
     return live_df
 
 
 def write_report(spreadsheet: gspread.Spreadsheet, rows: List[List[str]]) -> gspread.Worksheet:
-    """Clears (or creates) the output tab and writes the report starting
+    """
+    Clears (or creates) the output tab and writes the report starting
     at A1. Every row is padded to the same width so the write is a clean
-    rectangle. Returns the worksheet object for further formatting."""
+    rectangle. Returns the worksheet object for further formatting.
+    """
     print(f"write_report: {len(rows)} rows")
     if not rows:
         print("ERROR: 0 rows — not clearing tab.")
@@ -143,7 +189,7 @@ def format_report_layout(ws: gspread.Worksheet, total_rows: int, max_cols_letter
             "horizontalAlignment": "LEFT"
         }
     }
-    
+
     table_header_theme = {
         "userEnteredFormat": {
             "backgroundColor": {"red": 0.92, "green": 0.92, "blue": 0.94},
@@ -168,8 +214,8 @@ def format_report_layout(ws: gspread.Worksheet, total_rows: int, max_cols_letter
     all_values = ws.get_all_values()
     formats = []
 
-    ws.update_configuration({"textFormat": {"fontSize": 10}}) 
-    
+    ws.update_configuration({"textFormat": {"fontSize": 10}})
+
     # 1. Base alignment formatting pass (Center numerical metrics across C through L)
     formats.append({
         "range": f"C1:{max_cols_letter}{total_rows}",
@@ -187,17 +233,17 @@ def format_report_layout(ws: gspread.Worksheet, total_rows: int, max_cols_letter
                 "range": f"A{row_num}:{max_cols_letter}{row_num}",
                 "format": blue_theme
             })
-        
-        # Check for Metric Table Sub-headers (Now covers A and B keys too)
+
+        # Check for Metric Table Sub-headers (Covers A and B keys too)
         elif "SNAPS" in row_str or "RUN %" in row_str:
             formats.append({
                 "range": f"A{row_num}:{max_cols_letter}{row_num}",
                 "format": table_header_theme
             })
-            
+
         # Standard Data Rows: Ensure Column A and B elements are bolded/left-aligned
         else:
-            if row[0].strip() != "" or row[1].strip() != "":
+            if len(row) > 1 and (row[0].strip() != "" or row[1].strip() != ""):
                 if "SELECT" not in row_str:
                     formats.append({
                         "range": f"A{row_num}:B{row_num}",
@@ -206,7 +252,7 @@ def format_report_layout(ws: gspread.Worksheet, total_rows: int, max_cols_letter
 
     if formats:
         ws.batch_format(formats)
-        
+
     ws.update_view_setting(show_grid_lines=True)
     print("Report layout styling successfully drawn.")
 
@@ -221,7 +267,7 @@ def apply_trend_formatting(ws: gspread.Worksheet, trend_types: List[str]) -> Non
         return
 
     print("Applying conditional trend markers...")
-    
+
     green_format = {"userEnteredFormat": {"backgroundColor": {"red": 0.88, "green": 0.95, "blue": 0.88}}}
     red_format = {"userEnteredFormat": {"backgroundColor": {"red": 0.97, "green": 0.87, "blue": 0.87}}}
 
@@ -230,7 +276,7 @@ def apply_trend_formatting(ws: gspread.Worksheet, trend_types: List[str]) -> Non
     for idx, trend in enumerate(trend_types):
         row_num = idx + 2
         cleaned_trend = str(trend).strip().lower()
-        
+
         if "stay" in cleaned_trend:
             formats.append({
                 "range": f"A{row_num}:L{row_num}",
