@@ -18,6 +18,7 @@ import pandas as pd
 from google.oauth2.service_account import Credentials
 
 import config
+import analysis
 
 
 def resolve_odk_columns(df: pd.DataFrame):
@@ -174,7 +175,10 @@ def load_sheet_as_df(spreadsheet: gspread.Spreadsheet, tab_name: str) -> pd.Data
 
 
 def load_defense_live_df(spreadsheet: gspread.Spreadsheet) -> pd.DataFrame:
-    """Loads ODK sheet and filters for defensive plays (Column B containing 'D')."""
+    """Loads ODK sheet and filters for defensive plays (Column B containing 'D').
+    Normalizes both column names and play type values so downstream code finds
+    canonical "Run"/"Pass" instead of shorthand R/P or other variations.
+    """
     df = load_sheet_as_df(spreadsheet, config.ODK_SHEET_NAME)
     if df.empty:
         return df
@@ -187,6 +191,9 @@ def load_defense_live_df(spreadsheet: gspread.Spreadsheet) -> pd.DataFrame:
 
     # Normalize column names so downstream analysis finds canonical columns
     live_df = _normalize_odk_dataframe_columns(live_df)
+    
+    # Normalize play type VALUES (R/P/Run/Pass → canonical "Run"/"Pass")
+    live_df = analysis.add_situational_columns(live_df)
 
     print(f"'{config.ODK_SHEET_NAME}': {len(live_df)} defensive rows (ODK contains 'D')")
     return live_df
