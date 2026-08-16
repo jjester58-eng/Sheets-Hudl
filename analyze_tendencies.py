@@ -1,100 +1,114 @@
-"""
-analyze_tendencies.py
-----------------------
-Orchestrator only. Loads scout and live data, runs every analysis
-function, and writes both reports. No football math (that's analysis.py)
-and no report formatting (that's reports.py) - if you're tempted to add
-either kind of logic here, it belongs in one of those modules instead.
+"""Thin orchestration for the DEF ANALYSIS pipeline.
 
-ALL live data comes from ONE place: the ODK tab, read once and split by
-side (ODK column == "D" or "O"). No other tab is read for the live side of
-either report.
-
-Writes two tabs:
-    DEF ANALYSIS - comparison-first: "Are they doing what we scouted, or
-        have they changed - and if they line up here again, what should we
-        expect?" (opponent offense, scout vs live)
-    OFF ANALYSIS - self-tendency only, no scout side: "What do WE tend to
-        call, and how often?" (our offense, live only)
+This module should only coordinate calls to the data-access layer in sheets.py,
+analysis.py, and reports.py. All Google Sheets auth, reads, and writes remain in
+sheets.py so the project has a single source of truth for spreadsheet behavior.
 """
 
-import config
-import sheets
+import sys
+
 import analysis
+import config
 import reports
+import sheets
 
 
 def main() -> None:
-    gc = sheets.get_client()
-    spreadsheet = sheets.open_spreadsheet(gc)
-    sheets.validate_required_tabs(spreadsheet, [config.ODK_SHEET_NAME, config.SCOUT_SHEET_NAME])
+    """Load ODK and weekly data, analyze them, and write the DEF ANALYSIS report."""
+    print("=" * 70)
+    print("SHEETS-HUDL DEF ANALYSIS")
+    print("=" * 70)
+    print()
 
-    scout_df = analysis.add_situational_columns(sheets.load_sheet_as_df(spreadsheet, config.SCOUT_SHEET_NAME))
+    try:
+        gc = sheets.get_client()
+        spreadsheet = sheets.open_spreadsheet(gc)
+    except Exception as exc:
+        print(f"ERROR: Failed to authenticate or open spreadsheet: {exc}")
+        sys.exit(1)
 
-    # Read ODK once, split by side - avoids reading the sheet twice.
-    odk_df = sheets.load_sheet_as_df(spreadsheet, config.ODK_SHEET_NAME)
-    live_df = analysis.add_situational_columns(sheets.filter_odk_by_side(odk_df, config.SIDE_DEFENSE))
-    off_live_df = analysis.add_situational_columns(sheets.filter_odk_by_side(odk_df, config.SIDE_OFFENSE))
+    required_tabs = [config.WEEKLY_DATA_SHEET_NAME, config.ODK_SHEET_NAME]
+    try:
+        sheets.validate_required_tabs(spreadsheet, required_tabs)
+    except RuntimeError as exc:
+        print(f"ERROR: {exc}")
+        sys.exit(1)
 
-    _write_defense_report(spreadsheet, scout_df, live_df)
-    _write_offense_report(spreadsheet, off_live_df)
-    print("Done.")
+    print("Loading weekly scout data...")
+    scout_df = sheets.load_sheet_as_df(spreadsheet, config.WEEKLY_DATA_SHEET_NAME)
+    scout_ready = not scout_df.empty
+    if scout_ready:
+        scout_df = analysis.add_situational_columns(scout_df)
+    else:
+        print("WARNING: Weekly data is empty. Scout comparisons will be skipped.")
 
+    print("Loading live ODK data...")
+    live_df = sheets.load_defense_live_df(spreadsheet)
+    live_ready = not live_df.empty
+    if not live_ready:
+        print("WARNING: No defensive snaps found in ODK.")
 
-def _write_defense_report(spreadsheet, scout_df, live_df) -> None:
-    """DEF ANALYSIS: opponent offense, scout vs live comparison."""
+    scout_summary = analysis.build_summary(scout_df) if scout_ready else analysis.Summary(0, 0.0, 0.0, 0, 0)
+    live_summary = analysis.build_summary(live_df) if live_ready else analysis.Summary(0, 0.0, 0.0, 0, 0)
 
-    # --- Headline numbers for each side (building blocks) ---
-    scout_summary = analysis.build_summary(scout_df)
-    live_summary = analysis.build_summary(live_df)
-    scout_top_runs = analysis.build_top_plays(scout_df, config.PLAY_TYPE_RUN)
-    scout_top_passes = analysis.build_top_plays(scout_df, config.PLAY_TYPE_PASS)
-    live_top_runs = analysis.build_top_plays(live_df, config.PLAY_TYPE_RUN)
-    live_top_passes = analysis.build_top_plays(live_df, config.PLAY_TYPE_PASS)
+    if live_ready:
+        def_analysis = analysis.analyze_def_play_types(live_df)
+        print(f"  Defensive snaps: {def_analysis.total_defensive_plays}")
+        print(f"    Runs:  {def_analysis.run_count} ({def_analysis.run_pct:.1f}%)")
+        print(f"    Passes: {def_analysis.pass_count} ({def_analysis.pass_pct:.1f}%)")
+    else:
+        def_analysis = None
 
-    # --- 1. Overall Identity (scout vs live) ---
+    print("Building analysis sections...")
     identity = analysis.build_identity_comparison(scout_summary, live_summary)
-
-    # --- 4. Top Formations (comparison, per formation) ---
-    formation_comparisons = analysis.build_formation_comparisons(scout_df, live_df)
-
-    # --- 5. Formation Tendencies (the scout "book") ---
-    formation_tendencies = analysis.build_top_formations(scout_df, top_n=config.TOP_N_FORMATIONS * 2)
-
-    # --- 6 & 7. Down & Distance / Field Position + Expected Call engine ---
-    down_distance_expectations = analysis.build_down_distance_expectations(scout_df, live_df)
-    field_zone_expectations = analysis.build_field_zone_expectations(scout_df, live_df)
-    field_position_available = (
-        analysis.has_field_position_data(scout_df) or analysis.has_field_position_data(live_df)
+    formation_changes = analysis.compare_formations(scout_df, live_df) if scout_ready and live_ready else []
+    run_changes = analysis.compare_plays(scout_df, live_df, config.PLAY_TYPE_RUN) if scout_ready and live_ready else []
+    pass_changes = analysis.compare_plays(scout_df, live_df, config.PLAY_TYPE_PASS) if scout_ready and live_ready else []
+    biggest_changes = (
+        analysis.build_biggest_changes(formation_changes, run_changes, pass_changes)
+        if scout_ready and live_ready
+        else analysis.BiggestChanges([], [], [], [])
+    )
+    formation_comparisons = analysis.build_formation_comparisons(scout_df, live_df) if scout_ready and live_ready else []
+    formation_tendencies = analysis.build_top_formations(live_df) if live_ready else []
+    down_distance_expectations = analysis.build_down_distance_expectations(scout_df, live_df) if scout_ready and live_ready else []
+    field_zone_expectations = analysis.build_field_zone_expectations(scout_df, live_df) if scout_ready and live_ready else []
+    field_position_available = analysis.has_field_position_data(scout_df) or analysis.has_field_position_data(live_df)
+    explosive = analysis.build_explosive_comparison(scout_df, live_df) if scout_ready and live_ready else []
+    scout_top_runs = analysis.build_top_plays(scout_df, config.PLAY_TYPE_RUN) if scout_ready else []
+    scout_top_passes = analysis.build_top_plays(scout_df, config.PLAY_TYPE_PASS) if scout_ready else []
+    live_top_runs = analysis.build_top_plays(live_df, config.PLAY_TYPE_RUN) if live_ready else []
+    live_top_passes = analysis.build_top_plays(live_df, config.PLAY_TYPE_PASS) if live_ready else []
+    game_plan_score = (
+        analysis.compute_game_plan_score(
+            formation_changes,
+            scout_summary,
+            live_summary,
+            scout_top_runs,
+            scout_top_passes,
+            live_top_runs,
+            live_top_passes,
+            down_distance_expectations,
+        )
+        if scout_ready and live_ready
+        else None
+    )
+    coach_alerts = (
+        analysis.build_coach_alerts(
+            identity,
+            formation_comparisons,
+            formation_changes,
+            run_changes,
+            pass_changes,
+            down_distance_expectations,
+            field_zone_expectations,
+        )
+        if scout_ready and live_ready
+        else []
     )
 
-    # --- 8. Explosive Plays (comparison) ---
-    explosive = analysis.build_explosive_comparison(scout_df, live_df)
-
-    # --- Raw movers (feed Biggest Changes, Coach Alerts, Game Plan Match) ---
-    formation_changes = analysis.compare_formations(scout_df, live_df)
-    run_changes = analysis.compare_plays(scout_df, live_df, config.PLAY_TYPE_RUN)
-    pass_changes = analysis.compare_plays(scout_df, live_df, config.PLAY_TYPE_PASS)
-
-    # --- 3. Biggest Changes ---
-    biggest_changes = analysis.build_biggest_changes(formation_changes, run_changes, pass_changes)
-
-    # --- 9. Coach Alerts ---
-    coach_alerts = analysis.build_coach_alerts(
-        identity, formation_comparisons, formation_changes,
-        run_changes, pass_changes,
-        down_distance_expectations, field_zone_expectations,
-    )
-
-    # --- 2. Game Plan Match ---
-    live_ready = live_summary.total_plays >= config.MIN_LIVE_PLAYS_FOR_COMPARISON
-    game_plan_score = analysis.compute_game_plan_score(
-        formation_changes, scout_summary, live_summary,
-        scout_top_runs, scout_top_passes, live_top_runs, live_top_passes,
-        down_distance_expectations,
-    ) if live_ready else None
-
-    report_rows = reports.build_full_report(
+    print("Generating formatted report...")
+    rows = reports.build_full_report(
         identity=identity,
         game_plan_score=game_plan_score,
         biggest_changes=biggest_changes,
@@ -107,34 +121,36 @@ def _write_defense_report(spreadsheet, scout_df, live_df) -> None:
         coach_alerts=coach_alerts,
         live_ready=live_ready,
     )
+    print(f"  Report rows: {len(rows)}")
 
-    sheets.write_report(spreadsheet, report_rows, sheet_name=config.OUTPUT_SHEET_NAME)
+    print("Writing to Google Sheets...")
+    print("========== BEFORE WRITE ==========")
+    print(f"Report rows type: {type(rows)}")
+    print(f"Report row count: {len(rows)}")
 
+    if rows:
+        print(f"First row: {rows[0]}")
+        print(f"Last row: {rows[-1]}")
+    else:
+        print("REPORT IS EMPTY")
 
-def _write_offense_report(spreadsheet, off_live_df) -> None:
-    """OFF ANALYSIS: our offense, self-tendency only - no scout side."""
+    ws = sheets.write_report(spreadsheet, rows)
 
-    summary = analysis.build_summary(off_live_df)
-    formations = analysis.build_top_formations(off_live_df, top_n=config.TOP_N_FORMATIONS * 2)
-    top_runs = analysis.build_top_plays(off_live_df, config.PLAY_TYPE_RUN, top_n=config.TOP_N_PLAYS * 2)
-    top_passes = analysis.build_top_plays(off_live_df, config.PLAY_TYPE_PASS, top_n=config.TOP_N_PLAYS * 2)
-    down_distance_summary = analysis.build_down_distance_summary(off_live_df)
-    field_zone_summary = analysis.build_field_zone_summary(off_live_df)
-    field_position_available = analysis.has_field_position_data(off_live_df)
-    explosive = analysis.build_explosive_report(off_live_df, top_n=config.TOP_N_PLAYS * 2)
+    print("========== AFTER WRITE ==========")
+    print(f"Worksheet returned: {ws.title if ws else None}")
 
-    report_rows = reports.build_offense_report(
-        summary=summary,
-        formations=formations,
-        top_runs=top_runs,
-        top_passes=top_passes,
-        down_distance_summary=down_distance_summary,
-        field_zone_summary=field_zone_summary,
-        field_position_available=field_position_available,
-        explosive=explosive,
-    )
+    if ws is None:
+        print("ERROR: Failed to write report.")
+        sys.exit(1)
 
-    sheets.write_report(spreadsheet, report_rows, sheet_name=config.OFF_OUTPUT_SHEET_NAME)
+    sheets.format_report_layout(ws, len(rows))
+    sheets.apply_trend_formatting(ws, [c.change for c in formation_changes])
+
+    print("Report written and formatted successfully.")
+    print()
+    print("=" * 70)
+    print("ANALYSIS COMPLETE")
+    print("=" * 70)
 
 
 if __name__ == "__main__":
