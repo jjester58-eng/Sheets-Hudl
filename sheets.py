@@ -370,8 +370,7 @@ def format_report_layout(ws: gspread.Worksheet, total_rows: int, max_cols_letter
     if formats:
         ws.batch_format(formats)
 
-    ws.update_view_setting(show_grid_lines=True)
-    print("Report layout styling successfully drawn.")
+        print("Report layout styling successfully drawn.")
 
 
 def apply_trend_formatting(ws: gspread.Worksheet, trend_types: List[str]) -> None:
