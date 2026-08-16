@@ -63,16 +63,6 @@ class FormationSummary:
     top_pass_plays: List[str]
 
 
-@dataclass
-class DefPlayTypeAnalysis:
-    """Defensive play type breakdown: total snaps, runs vs passes."""
-    total_defensive_plays: int
-    run_count: int
-    pass_count: int
-    run_pct: float
-    pass_pct: float
-
-
 # ---------------------------------------------------------------------------
 # Column prep
 # ---------------------------------------------------------------------------
@@ -335,70 +325,6 @@ def build_summary(df: pd.DataFrame) -> Summary:
         pass_pct=pass_pct,
         explosive_run_count=explosive_run_count,
         explosive_pass_count=explosive_pass_count,
-    )
-
-
-def analyze_def_play_types(df: pd.DataFrame) -> DefPlayTypeAnalysis:
-    """Analyzes play type distribution (run vs pass) for defensive snaps.
-    Filters the input DataFrame for rows where the ODK column contains 'D'
-    (defensive plays), normalizes play type values, then counts and calculates percentages."""
-    if df.empty:
-        return DefPlayTypeAnalysis(
-            total_defensive_plays=0,
-            run_count=0,
-            pass_count=0,
-            run_pct=0.0,
-            pass_pct=0.0,
-        )
-
-    # Filter for defensive plays (ODK column contains 'D')
-    if config.COL_SIDE not in df.columns:
-        return DefPlayTypeAnalysis(
-            total_defensive_plays=0,
-            run_count=0,
-            pass_count=0,
-            run_pct=0.0,
-            pass_pct=0.0,
-        )
-
-    def_df = df[df[config.COL_SIDE].astype(str).str.strip().str.upper() == config.SIDE_DEFENSE.upper()].reset_index(drop=True)
-
-    if def_df.empty:
-        return DefPlayTypeAnalysis(
-            total_defensive_plays=0,
-            run_count=0,
-            pass_count=0,
-            run_pct=0.0,
-            pass_pct=0.0,
-        )
-
-    # Normalize play type values (R/P shorthand, case variants, etc.)
-    if config.COL_PLAY_TYPE in def_df.columns:
-        def_df = def_df.copy()
-        def_df[config.COL_PLAY_TYPE] = def_df[config.COL_PLAY_TYPE].map(_normalize_play_type)
-
-    total = len(def_df)
-    if config.COL_PLAY_TYPE not in def_df.columns:
-        return DefPlayTypeAnalysis(
-            total_defensive_plays=total,
-            run_count=0,
-            pass_count=0,
-            run_pct=0.0,
-            pass_pct=0.0,
-        )
-
-    run_count = int((def_df[config.COL_PLAY_TYPE] == config.PLAY_TYPE_RUN).sum())
-    pass_count = int((def_df[config.COL_PLAY_TYPE] == config.PLAY_TYPE_PASS).sum())
-
-    run_pct = round(run_count / total * 100, 1) if total > 0 else 0.0
-    pass_pct = round(pass_count / total * 100, 1) if total > 0 else 0.0
-
-    return DefPlayTypeAnalysis(
-        total_defensive_plays=total,
-        run_count=run_count,
-        pass_count=pass_count,
-        run_pct=run_pct,
-        pass_pct=pass_pct,
     )
 
 
@@ -885,6 +811,70 @@ def build_field_zone_expectations(scout_df: pd.DataFrame, live_df: pd.DataFrame)
 
 
 # ---------------------------------------------------------------------------
+# Offense self-tendency version of the situation engine - no scout side.
+# "What do WE tend to call here" rather than "what does the opponent do."
+# ---------------------------------------------------------------------------
+
+@dataclass
+class SituationSelfSummary:
+    """One situation (a down/distance bucket or a field zone) for a single
+    dataset - no scout/live comparison, since offense self-scouting has no
+    scout side. Answers 'what do we call here, and how often.'"""
+    label: str
+    play_count: int
+    run_pct: float
+    pass_pct: float
+    top_plays: List[PlayProbability]   # ranked within the dominant type
+    confident: bool
+
+
+def _self_situation_summary(label: str, df: pd.DataFrame) -> SituationSelfSummary:
+    run_pct, pass_pct = _run_pass_split(df)
+    dom, _dom_pct = _dominant(run_pct, pass_pct)
+    return SituationSelfSummary(
+        label=label,
+        play_count=len(df),
+        run_pct=run_pct,
+        pass_pct=pass_pct,
+        top_plays=_play_probabilities(df, _play_type_of(dom), config.EXPECTED_CALL_TOP_N),
+        confident=is_confident(len(df)),
+    )
+
+
+def build_down_distance_summary(df: pd.DataFrame) -> List[SituationSelfSummary]:
+    """Self-tendency Down & Distance breakdown - same label order as the
+    scout-vs-live engine, single dataset."""
+    results = []
+    for label in _down_distance_labels():
+        subset = df[df["DOWN_DISTANCE_LABEL"] == label] if "DOWN_DISTANCE_LABEL" in df.columns else pd.DataFrame()
+        if subset.empty:
+            continue
+        results.append(_self_situation_summary(label, subset))
+
+    for bucket in ("Long", "Medium", "Short"):
+        subset = df[df["DIST_BUCKET"] == bucket] if "DIST_BUCKET" in df.columns else pd.DataFrame()
+        if subset.empty:
+            continue
+        results.append(_self_situation_summary(bucket, subset))
+
+    return results
+
+
+def build_field_zone_summary(df: pd.DataFrame) -> List[SituationSelfSummary]:
+    """Self-tendency Field Position breakdown. Empty if the dataset has no
+    usable field position data."""
+    if not has_field_position_data(df):
+        return []
+    results = []
+    for zone_name, _low, _high in config.FIELD_ZONES:
+        subset = df[df["FIELD_ZONE"] == zone_name] if "FIELD_ZONE" in df.columns else pd.DataFrame()
+        if subset.empty:
+            continue
+        results.append(_self_situation_summary(zone_name, subset))
+    return results
+
+
+# ---------------------------------------------------------------------------
 # Section 6: Explosive Plays (scout vs live, one small table)
 # ---------------------------------------------------------------------------
 
@@ -1141,3 +1131,209 @@ def compute_game_plan_score(
         top_plays_component=round(top_plays_component, 1),
         down_distance_component=round(down_distance_component, 1),
     )
+
+
+# ---------------------------------------------------------------------------
+# Standalone defensive Run/Pass count (used by the test suite; not part of
+# the main report pipeline, which uses _run_pass_split on the pre-filtered
+# live_df instead). Kept for backward compatibility with existing tests -
+# do not remove without also removing/updating those tests.
+# ---------------------------------------------------------------------------
+
+@dataclass
+class DefPlayTypeAnalysis:
+    total_defensive_plays: int
+    run_count: int
+    run_pct: float
+    pass_count: int
+    pass_pct: float
+
+
+def analyze_def_play_types(df: pd.DataFrame) -> DefPlayTypeAnalysis:
+    """Filters a raw ODK-shaped DataFrame to rows where the side column
+    contains 'D' (defensive plays) and evaluates the play-type column for
+    Run vs Pass breakdowns. Tolerant of the column being at its canonical
+    name/position or at the raw B/H spreadsheet positions."""
+    if df.empty:
+        return DefPlayTypeAnalysis(0, 0, 0.0, 0, 0.0)
+
+    col_odk = config.COL_SIDE if config.COL_SIDE in df.columns else df.columns[1]
+    col_play_type = config.COL_PLAY_TYPE if config.COL_PLAY_TYPE in df.columns else df.columns[7]
+
+    is_def = df[col_odk].astype(str).str.upper().str.contains("D", na=False)
+    def_df = df[is_def]
+
+    if def_df.empty:
+        return DefPlayTypeAnalysis(0, 0, 0.0, 0, 0.0)
+
+    normalized_types = def_df[col_play_type].map(_normalize_play_type).astype(str).str.upper()
+
+    run_count = int((normalized_types == config.PLAY_TYPE_RUN.upper()).sum())
+    pass_count = int((normalized_types == config.PLAY_TYPE_PASS.upper()).sum())
+    total_plays = run_count + pass_count
+
+    run_pct = round((run_count / total_plays * 100), 1) if total_plays > 0 else 0.0
+    pass_pct = round((pass_count / total_plays * 100), 1) if total_plays > 0 else 0.0
+
+    return DefPlayTypeAnalysis(
+        total_defensive_plays=total_plays,
+        run_count=run_count,
+        run_pct=run_pct,
+        pass_count=pass_count,
+        pass_pct=pass_pct,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Offense efficiency tables (run/pass/red zone/3rd down), grouped by
+# formation + play call. "Positive" run/pass efficiency answers "does this
+# play work," which is a different question from Top Plays' "how often do
+# we call it."
+# ---------------------------------------------------------------------------
+
+@dataclass
+class FormationPlayEfficiency:
+    """One formation+play combo's success rate against a gain threshold."""
+    formation: str
+    play_name: str
+    attempts: int
+    successes: int
+    success_rate: float
+    avg_gain: float
+
+
+@dataclass
+class FormationPlayCount:
+    """One formation+play combo's raw count - used for explosive-play
+    tables where there's no attempts/rate, just how many times it happened."""
+    formation: str
+    play_name: str
+    count: int
+
+
+def _formation_play_groups(df: pd.DataFrame):
+    """Yields (formation, play_name, group_df) for every formation+play
+    combo present. Empty/missing-column input yields nothing."""
+    if (df.empty or config.COL_FORMATION not in df.columns
+            or config.COL_PLAY_CALL not in df.columns or config.COL_GAIN_LOSS not in df.columns):
+        return
+    for (formation, play_name), group in df.groupby([config.COL_FORMATION, config.COL_PLAY_CALL]):
+        yield formation, play_name, group
+
+
+def _formation_play_efficiency(df: pd.DataFrame, success_gain_min: float) -> List[FormationPlayEfficiency]:
+    """Success = gain >= success_gain_min. Sorted by most successes, then
+    most attempts, so the plays actually worth calling float to the top."""
+    results = []
+    for formation, play_name, group in _formation_play_groups(df):
+        gains = group[config.COL_GAIN_LOSS]
+        attempts = len(group)
+        successes = int((gains >= success_gain_min).sum())
+        results.append(FormationPlayEfficiency(
+            formation=formation,
+            play_name=play_name,
+            attempts=attempts,
+            successes=successes,
+            success_rate=round(successes / attempts * 100, 1) if attempts else 0.0,
+            avg_gain=round(gains.mean(), 1) if attempts else 0.0,
+        ))
+    return sorted(results, key=lambda r: (-r.successes, -r.attempts))
+
+
+def build_run_efficiency(df: pd.DataFrame) -> List[FormationPlayEfficiency]:
+    """Run plays only, success = gain >= POSITIVE_RUN_GAIN_THRESHOLD."""
+    if config.COL_PLAY_TYPE not in df.columns:
+        return []
+    return _formation_play_efficiency(
+        df[df[config.COL_PLAY_TYPE] == config.PLAY_TYPE_RUN],
+        config.POSITIVE_RUN_GAIN_THRESHOLD,
+    )
+
+
+def build_pass_efficiency(df: pd.DataFrame) -> List[FormationPlayEfficiency]:
+    """Pass plays only, success = gain >= POSITIVE_PASS_GAIN_THRESHOLD."""
+    if config.COL_PLAY_TYPE not in df.columns:
+        return []
+    return _formation_play_efficiency(
+        df[df[config.COL_PLAY_TYPE] == config.PLAY_TYPE_PASS],
+        config.POSITIVE_PASS_GAIN_THRESHOLD,
+    )
+
+
+def _formation_play_explosive_counts(df: pd.DataFrame, play_type: str, threshold: float) -> List[FormationPlayCount]:
+    """How many times each formation+play combo produced an explosive gain
+    of the given play type. Sorted by count, most explosive first."""
+    if (df.empty or config.COL_PLAY_TYPE not in df.columns
+            or config.COL_FORMATION not in df.columns or config.COL_PLAY_CALL not in df.columns
+            or config.COL_GAIN_LOSS not in df.columns):
+        return []
+
+    subset = df[(df[config.COL_PLAY_TYPE] == play_type) & (df[config.COL_GAIN_LOSS] >= threshold)]
+    if subset.empty:
+        return []
+
+    counts = subset.groupby([config.COL_FORMATION, config.COL_PLAY_CALL]).size()
+    results = [
+        FormationPlayCount(formation=formation, play_name=play_name, count=int(count))
+        for (formation, play_name), count in counts.items()
+    ]
+    return sorted(results, key=lambda r: -r.count)
+
+
+def build_explosive_runs_by_formation(df: pd.DataFrame) -> List[FormationPlayCount]:
+    return _formation_play_explosive_counts(df, config.PLAY_TYPE_RUN, config.EXPLOSIVE_RUN_THRESHOLD)
+
+
+def build_explosive_passes_by_formation(df: pd.DataFrame) -> List[FormationPlayCount]:
+    return _formation_play_explosive_counts(df, config.PLAY_TYPE_PASS, config.EXPLOSIVE_PASS_THRESHOLD)
+
+
+def build_red_zone_efficiency(df: pd.DataFrame) -> List[FormationPlayEfficiency]:
+    """Red zone = FIELD_ZONE in config.RED_ZONE_FIELD_ZONES (reuses the same
+    zone bucketing everything else in the report uses - no separate yard-
+    line check). Success = any positive gain. Runs and passes are combined,
+    matching how coaches actually review red-zone calls as one list."""
+    if "FIELD_ZONE" not in df.columns:
+        return []
+    subset = df[df["FIELD_ZONE"].isin(config.RED_ZONE_FIELD_ZONES)]
+    return _formation_play_efficiency(subset, success_gain_min=0.01)
+
+
+def _third_down_success(down: Optional[float], distance: Optional[float], gain: Optional[float]) -> bool:
+    """Short/medium (<= DIST_MEDIUM_MAX): success = converted the down.
+    Long: success = gained at least THIRD_DOWN_LONG_GAIN_PCT of what was
+    needed - a judgment call, not a strict conversion."""
+    if pd.isna(down) or int(down) != 3 or pd.isna(distance) or pd.isna(gain):
+        return False
+    if distance <= config.DIST_MEDIUM_MAX:
+        return gain >= distance
+    return gain >= distance * config.THIRD_DOWN_LONG_GAIN_PCT
+
+
+def build_third_down_efficiency(df: pd.DataFrame) -> List[FormationPlayEfficiency]:
+    """3rd down only, combined run+pass, using the long-down judgment rule
+    in _third_down_success rather than a flat gain threshold."""
+    if (df.empty or config.COL_DOWN not in df.columns or config.COL_DISTANCE not in df.columns
+            or config.COL_GAIN_LOSS not in df.columns):
+        return []
+
+    subset = df[pd.to_numeric(df[config.COL_DOWN], errors="coerce") == 3]
+    if subset.empty:
+        return []
+
+    results = []
+    for formation, play_name, group in _formation_play_groups(subset):
+        attempts = len(group)
+        successes = sum(
+            1 for _, row in group.iterrows()
+            if _third_down_success(row[config.COL_DOWN], row[config.COL_DISTANCE], row[config.COL_GAIN_LOSS])
+        )
+        results.append(FormationPlayEfficiency(
+            formation=formation,
+            play_name=play_name,
+            attempts=attempts,
+            successes=successes,
+            success_rate=round(successes / attempts * 100, 1) if attempts else 0.0,
+            avg_gain=round(group[config.COL_GAIN_LOSS].mean(), 1) if attempts else 0.0,
+        ))
+    return sorted(results, key=lambda r: (-r.successes, -r.attempts))

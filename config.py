@@ -17,9 +17,9 @@ from typing import List, Tuple
 # ---------------------------------------------------------------------------
 
 ODK_SHEET_NAME: str = "ODK"                 # single source of truth for live data
-WEEKLY_DATA_SHEET_NAME: str = "WEEKLY DATA"  # 3+ weeks of scouted opponent film
-SCOUT_SHEET_NAME: str = WEEKLY_DATA_SHEET_NAME  # legacy alias retained for compatibility
-OUTPUT_SHEET_NAME: str = "DEF ANALYSIS"     # where the report gets written
+SCOUT_SHEET_NAME: str = "WEEKLY DATA"       # 3+ weeks of scouted opponent film
+OUTPUT_SHEET_NAME: str = "DEF ANALYSIS"     # defense report (opponent scout vs live)
+OFF_OUTPUT_SHEET_NAME: str = "OFF ANALYSIS"  # offense report (self tendencies, no scout side)
 
 # ---------------------------------------------------------------------------
 # Column names as they appear in the ODK sheet
@@ -49,6 +49,7 @@ COL_BACKFIELD: str = "BACKFIELD"
 COL_PROTECTION: str = "PROTECTION"
 
 SIDE_DEFENSE: str = "D"
+SIDE_OFFENSE: str = "O"
 
 # Values expected in COL_PLAY_TYPE
 PLAY_TYPE_RUN: str = "Run"
@@ -207,3 +208,23 @@ GAME_PLAN_BANDS = [
     (50.0, "Significant changes"),
     (0.0, "Completely different offense"),
 ]
+
+# ---------------------------------------------------------------------------
+# Offense efficiency tables (OFF ANALYSIS - run/pass/red zone/3rd down)
+# ---------------------------------------------------------------------------
+# A "positive" run or pass is one that gains at least this many yards -
+# these are separate, lower bars than EXPLOSIVE_RUN_THRESHOLD/
+# EXPLOSIVE_PASS_THRESHOLD above, which mark a much bigger gain.
+POSITIVE_RUN_GAIN_THRESHOLD: int = 4
+POSITIVE_PASS_GAIN_THRESHOLD: int = 7
+
+# Which FIELD_ZONES bucket(s) count as "red zone" for the efficiency table.
+# Must match zone names in FIELD_ZONES above.
+RED_ZONE_FIELD_ZONES: List[str] = ["Red Zone", "Goal Line"]
+
+# Third down is "successful" if distance is gained on short/medium (<= this
+# many yards - reuses the same Short/Medium/Long cutoff as DIST_MEDIUM_MAX
+# elsewhere) or, on long down-and-distance, if the gain reaches this
+# fraction of what's needed. This 70% rule is a coaching judgment call, not
+# a universal stat - adjust freely.
+THIRD_DOWN_LONG_GAIN_PCT: float = 0.70

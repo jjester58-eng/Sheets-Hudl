@@ -6,14 +6,11 @@ to write to a Google Sheet. This module does zero calculation - if you're
 computing a percentage or an average in here, it belongs in analysis.py
 instead.
 
-Design philosophy (this is a GAME PLAN, not a stats dump):
+Two reports come out of this file:
+
+DEFENSE report (comparison-first, scout vs live):
     Everything answers ONE question -
         "Are they doing what we scouted, or have they changed?"
-    So the report is comparison-first. There is no standalone "scout
-    section" and no duplicate "live section" - every number is shown as
-    Scout vs Live vs Trend, side by side, once.
-
-Report order (a DC needs ~6 answers, fast):
     1. OVERALL IDENTITY     - who are they, and have they changed?
     2. GAME PLAN MATCH      - one visual bar, one verdict
     3. BIGGEST CHANGES      - the movers a coordinator reads first
@@ -24,6 +21,16 @@ Report order (a DC needs ~6 answers, fast):
     8. EXPLOSIVE PLAYS      - one small table
     9. COACH ALERTS         - plain-English, actionable
 
+OFFENSE report (self-tendency only, no scout side):
+    Answers "what do WE tend to call, and how often" - live data only.
+    1. OFFENSE IDENTITY  - plays, run/pass split, explosive counts
+    2. TOP FORMATIONS    - usage + tendency + favorites, no comparison
+    3. TOP RUN PLAYS      - calls, avg gain, explosive count
+    4. TOP PASS PLAYS     - calls, avg gain, explosive count
+    5. DOWN & DISTANCE    - self tendency + top plays per situation
+    6. FIELD POSITION     - same shape
+    7. EXPLOSIVE PLAYS    - self only
+
 Every function returns a List[List[str]] - each inner list is one row of
 cells, ready to hand to sheets.py for writing.
 """
@@ -33,13 +40,16 @@ from typing import List, Optional
 import config
 from analysis import (
     FormationSummary,
+    PlayCallStat,
     PlayProbability,
     IdentityComparison,
     FormationComparison,
     SituationExpectation,
+    SituationSelfSummary,
     ExplosiveComparison,
     BiggestChanges,
     GamePlanScore,
+    Summary,
 )
 
 Row = List[str]
@@ -98,7 +108,7 @@ def _expected_play_names(plays: List[PlayProbability]) -> str:
 
 
 # ---------------------------------------------------------------------------
-# 1. OVERALL IDENTITY
+# 1. OVERALL IDENTITY (defense)
 # ---------------------------------------------------------------------------
 
 def build_identity_section(identity: IdentityComparison) -> List[Row]:
@@ -130,7 +140,7 @@ def build_identity_section(identity: IdentityComparison) -> List[Row]:
 
 
 # ---------------------------------------------------------------------------
-# 2. GAME PLAN MATCH
+# 2. GAME PLAN MATCH (defense)
 # ---------------------------------------------------------------------------
 
 def _match_bar(score: float) -> str:
@@ -190,7 +200,7 @@ def build_game_plan_section(gps: Optional[GamePlanScore], live_ready: bool) -> L
 
 
 # ---------------------------------------------------------------------------
-# 3. BIGGEST CHANGES
+# 3. BIGGEST CHANGES (defense)
 # ---------------------------------------------------------------------------
 
 def build_biggest_changes_section(changes: BiggestChanges, live_ready: bool) -> List[Row]:
@@ -224,7 +234,7 @@ def build_biggest_changes_section(changes: BiggestChanges, live_ready: bool) -> 
 
 
 # ---------------------------------------------------------------------------
-# 4. TOP FORMATIONS (scout vs live, per formation)
+# 4. TOP FORMATIONS (defense, scout vs live, per formation)
 # ---------------------------------------------------------------------------
 
 def build_top_formations_section(comparisons: List[FormationComparison]) -> List[Row]:
@@ -264,7 +274,7 @@ def build_top_formations_section(comparisons: List[FormationComparison]) -> List
 
 
 # ---------------------------------------------------------------------------
-# 5. FORMATION TENDENCIES (the book: run/pass split + favorites)
+# 5. FORMATION TENDENCIES (defense, the book: run/pass split + favorites)
 # ---------------------------------------------------------------------------
 
 def build_formation_tendencies_section(formations: List[FormationSummary]) -> List[Row]:
@@ -288,7 +298,7 @@ def build_formation_tendencies_section(formations: List[FormationSummary]) -> Li
 
 
 # ---------------------------------------------------------------------------
-# 6 & 7. DOWN & DISTANCE / FIELD POSITION (+ Expected Call engine)
+# 6 & 7. DOWN & DISTANCE / FIELD POSITION (defense, + Expected Call engine)
 # ---------------------------------------------------------------------------
 
 def _situation_trend_cell(exp: SituationExpectation) -> str:
@@ -367,7 +377,7 @@ def build_situation_section(
 
 
 # ---------------------------------------------------------------------------
-# 8. EXPLOSIVE PLAYS
+# 8. EXPLOSIVE PLAYS (defense)
 # ---------------------------------------------------------------------------
 
 def build_explosive_section(explosive: List[ExplosiveComparison]) -> List[Row]:
@@ -385,7 +395,7 @@ def build_explosive_section(explosive: List[ExplosiveComparison]) -> List[Row]:
 
 
 # ---------------------------------------------------------------------------
-# 9. COACH ALERTS
+# 9. COACH ALERTS (defense)
 # ---------------------------------------------------------------------------
 
 def build_coach_alerts_section(alerts: List[str], live_ready: bool) -> List[Row]:
@@ -405,7 +415,7 @@ def build_coach_alerts_section(alerts: List[str], live_ready: bool) -> List[Row]
 
 
 # ---------------------------------------------------------------------------
-# Full report assembly
+# Full DEFENSE report assembly
 # ---------------------------------------------------------------------------
 
 def build_full_report(
@@ -421,7 +431,8 @@ def build_full_report(
     coach_alerts: List[str],
     live_ready: bool,
 ) -> List[Row]:
-    """Assembles every section, in order, into the final list of rows."""
+    """Assembles every defense-report section, in order, into the final
+    list of rows."""
     rows: List[Row] = []
 
     rows += build_identity_section(identity)
@@ -443,5 +454,155 @@ def build_full_report(
 
     rows += build_explosive_section(explosive)
     rows += build_coach_alerts_section(coach_alerts, live_ready)
+
+    return rows
+
+
+# ===========================================================================
+# OFFENSE report - self-tendency only, no scout side
+# ===========================================================================
+
+# ---------------------------------------------------------------------------
+# 1. OFFENSE IDENTITY
+# ---------------------------------------------------------------------------
+
+def build_offense_identity_section(summary: Summary) -> List[Row]:
+    rows: List[Row] = [_section_header("OFFENSE IDENTITY")]
+    rows.append(["Plays", str(summary.total_plays)])
+    rows.append(["Run/Pass", f"{_pct(summary.run_pct)}/{_pct(summary.pass_pct)}"])
+    rows.append(["X-Run (10+)", str(summary.explosive_run_count)])
+    rows.append(["X-Pass (15+)", str(summary.explosive_pass_count)])
+    rows.append(_blank_row())
+    return rows
+
+
+# ---------------------------------------------------------------------------
+# 2. TOP FORMATIONS (offense, self only, no comparison)
+# ---------------------------------------------------------------------------
+
+def build_offense_formations_section(formations: List[FormationSummary]) -> List[Row]:
+    rows: List[Row] = [_section_header("TOP FORMATIONS (SELF)")]
+    if not formations:
+        rows.append(["(no formation data)"])
+        rows.append(_blank_row())
+        return rows
+
+    rows.append(["Formation", "Usage", "R%", "P%", "Top Runs", "Top Pass"])
+    for f in formations:
+        rows.append([
+            f.formation,
+            _pct(f.usage_pct),
+            _pct(f.run_pct),
+            _pct(f.pass_pct),
+            ", ".join(f.top_run_plays) or "—",
+            ", ".join(f.top_pass_plays) or "—",
+        ])
+    rows.append(_blank_row())
+    return rows
+
+
+# ---------------------------------------------------------------------------
+# 3 & 4. TOP RUN PLAYS / TOP PASS PLAYS (offense, calls + avg gain + explosive)
+# ---------------------------------------------------------------------------
+
+def build_offense_top_plays_section(title: str, plays: List[PlayCallStat]) -> List[Row]:
+    rows: List[Row] = [_section_header(title)]
+    if not plays:
+        rows.append(["(none yet)"])
+        rows.append(_blank_row())
+        return rows
+
+    rows.append(["Play", "Calls", "Avg Gain", "Explosive"])
+    for p in plays:
+        rows.append([p.play_name, str(p.calls), f"{p.avg_gain:.1f}", str(p.explosive_count)])
+    rows.append(_blank_row())
+    return rows
+
+
+# ---------------------------------------------------------------------------
+# 5 & 6. DOWN & DISTANCE / FIELD POSITION (offense, self tendency)
+# ---------------------------------------------------------------------------
+
+def build_offense_situation_section(
+    title: str,
+    situations: List[SituationSelfSummary],
+    empty_message: str,
+) -> List[Row]:
+    rows: List[Row] = [_section_header(title)]
+    if not situations:
+        rows.append([empty_message])
+        rows.append(_blank_row())
+        return rows
+
+    rows.append(["Situation", "Plays", "R/P", "Top Plays"])
+    for s in situations:
+        play_count_cell = str(s.play_count) if s.confident else f"{s.play_count} (low)"
+        rows.append([
+            s.label,
+            play_count_cell,
+            _run_pass_cell(s.run_pct, s.pass_pct, s.play_count),
+            _expected_play_names(s.top_plays),
+        ])
+    rows.append(_blank_row())
+    return rows
+
+
+# ---------------------------------------------------------------------------
+# 7. EXPLOSIVE PLAYS (offense, self only)
+# ---------------------------------------------------------------------------
+
+def build_offense_explosive_section(explosive: dict) -> List[Row]:
+    rows: List[Row] = [_section_header("EXPLOSIVE PLAYS (SELF)")]
+    runs = explosive.get("runs", [])
+    passes = explosive.get("passes", [])
+    if not runs and not passes:
+        rows.append(["(none yet)"])
+        rows.append(_blank_row())
+        return rows
+
+    rows.append(["Play", "Type", "Calls", "Avg Gain", "Explosive"])
+    for p in runs:
+        rows.append([p.play_name, "Run", str(p.calls), f"{p.avg_gain:.1f}", str(p.explosive_count)])
+    for p in passes:
+        rows.append([p.play_name, "Pass", str(p.calls), f"{p.avg_gain:.1f}", str(p.explosive_count)])
+    rows.append(_blank_row())
+    return rows
+
+
+# ---------------------------------------------------------------------------
+# Full OFFENSE report assembly
+# ---------------------------------------------------------------------------
+
+def build_offense_report(
+    summary: Summary,
+    formations: List[FormationSummary],
+    top_runs: List[PlayCallStat],
+    top_passes: List[PlayCallStat],
+    down_distance_summary: List[SituationSelfSummary],
+    field_zone_summary: List[SituationSelfSummary],
+    field_position_available: bool,
+    explosive: dict,
+) -> List[Row]:
+    """Assembles every offense-report section, in order, into the final
+    list of rows. No scout comparison anywhere - this is self-scouting."""
+    rows: List[Row] = []
+
+    rows += build_offense_identity_section(summary)
+    rows += build_offense_formations_section(formations)
+    rows += build_offense_top_plays_section("TOP RUN PLAYS", top_runs)
+    rows += build_offense_top_plays_section("TOP PASS PLAYS", top_passes)
+
+    rows += build_offense_situation_section(
+        "DOWN & DISTANCE (SELF)", down_distance_summary,
+        "(no down/distance data)",
+    )
+
+    field_empty = (
+        "(no field pos data — add FIELD POS column)"
+        if not field_position_available else "(no field position data)"
+    )
+    rows += build_offense_situation_section("FIELD POSITION (SELF)", field_zone_summary, field_empty)
+
+    rows += build_offense_explosive_section(explosive)
 
     return rows
