@@ -67,12 +67,20 @@ def load_sheet_as_df(
     spreadsheet: gspread.Spreadsheet,
     tab_name: str
 ) -> pd.DataFrame:
-    """Load a Google Sheet tab into a DataFrame.
-
-    Handles duplicate column headers so pandas always returns a Series
-    when accessing df[col].
     """
+    Load a Google Sheet tab into a DataFrame.
+
+    Handles:
+    - blank columns at the end of a sheet
+    - duplicate/blank headers
+    - completely empty rows
+    - whitespace around values
+
+    No football normalization happens here.
+    """
+
     ws = spreadsheet.worksheet(tab_name)
+
     print(
         f"Reading '{tab_name}': "
         f"{ws.row_count} rows x {ws.col_count} cols"
@@ -81,37 +89,62 @@ def load_sheet_as_df(
     try:
         rows = ws.get_all_values()
     except gspread.exceptions.APIError as e:
-        print(f"ERROR: could not read '{tab_name}': {e}")
-        sys.exit(1)
+        raise RuntimeError(
+            f"Could not read '{tab_name}': {e}"
+        ) from e
 
     if not rows:
         print(f"Warning: '{tab_name}' is completely empty.")
         return pd.DataFrame()
 
-    # Find the first non-empty row and use it as the header row.
+    # ------------------------------------------------------------
+    # Find the first row containing actual header information
+    # ------------------------------------------------------------
     header_idx = next(
         (
             i
             for i, row in enumerate(rows)
             if any(str(cell).strip() for cell in row)
         ),
-        0,
+        None,
     )
 
-    headers = [str(col).strip() for col in rows[header_idx]]
+    if header_idx is None:
+        print(f"Warning: '{tab_name}' contains no usable data.")
+        return pd.DataFrame()
 
-    # Make duplicate headers unique.
-    # Example:
-    #   PLAY TYPE
-    #   PLAY TYPE
-    #
-    # becomes:
-    #   PLAY TYPE
-    #   PLAY TYPE_1
+    raw_headers = rows[header_idx]
+
+    # ------------------------------------------------------------
+    # Remove trailing completely blank columns
+    # ------------------------------------------------------------
+    last_header = -1
+
+    for i, header in enumerate(raw_headers):
+        if str(header).strip():
+            last_header = i
+
+    if last_header < 0:
+        print(f"Warning: '{tab_name}' has no headers.")
+        return pd.DataFrame()
+
+    headers = [
+        str(header).strip()
+        for header in raw_headers[:last_header + 1]
+    ]
+
+    # ------------------------------------------------------------
+    # Make duplicate headers unique
+    # ------------------------------------------------------------
     seen = {}
     unique_headers = []
 
     for header in headers:
+        if header == "":
+            # Ignore unnamed columns entirely
+            unique_headers.append(None)
+            continue
+
         if header in seen:
             seen[header] += 1
             unique_headers.append(
@@ -120,6 +153,17 @@ def load_sheet_as_df(
         else:
             seen[header] = 0
             unique_headers.append(header)
+
+    # Remove columns with no header
+    keep_indexes = [
+        i for i, header in enumerate(unique_headers)
+        if header is not None
+    ]
+
+    unique_headers = [
+        unique_headers[i]
+        for i in keep_indexes
+    ]
 
     duplicates = [
         header
@@ -132,20 +176,43 @@ def load_sheet_as_df(
             f"WARNING: Duplicate headers found in "
             f"'{tab_name}': {duplicates}"
         )
-        print(f"Original headers: {headers}")
-        print(f"Unique headers:   {unique_headers}")
 
-    data = rows[header_idx + 1:]
+    print(f"Headers found in '{tab_name}':")
+    print(unique_headers)
 
+    # ------------------------------------------------------------
+    # Build data rows
+    # ------------------------------------------------------------
+    data = []
+
+    for row in rows[header_idx + 1:]:
+        # Make sure row is long enough
+        padded = list(row) + [""] * (
+            len(raw_headers) - len(row)
+        )
+
+        cleaned = [
+            padded[i]
+            for i in keep_indexes
+        ]
+
+        # Skip completely empty rows
+        if any(str(cell).strip() for cell in cleaned):
+            data.append(cleaned)
+
+    # ------------------------------------------------------------
+    # Create DataFrame
+    # ------------------------------------------------------------
     df = pd.DataFrame(
         data,
         columns=unique_headers
     )
 
-    # Convert every column to stripped strings.
+    # Strip whitespace from every value
     for col in df.columns:
         df[col] = (
             df[col]
+            .fillna("")
             .astype(str)
             .str.strip()
         )
@@ -158,7 +225,7 @@ def load_sheet_as_df(
     if df.empty:
         print(
             f"Warning: '{tab_name}' "
-            "has no data rows yet."
+            f"has no data rows yet."
         )
 
     return df
@@ -265,8 +332,7 @@ def format_report_layout(ws: gspread.Worksheet, total_rows: int, max_cols_letter
     all_values = ws.get_all_values()
     formats = []
 
-    ws.update_configuration({"textFormat": {"fontSize": 10}})
-
+   
     # 1. Base alignment formatting pass (Center numerical metrics across C through L)
     formats.append({
         "range": f"C1:{max_cols_letter}{total_rows}",
