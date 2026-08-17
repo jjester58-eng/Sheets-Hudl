@@ -24,6 +24,51 @@ from google.oauth2.service_account import Credentials
 
 import config
 
+def get_client() -> gspread.Client:
+    """Authenticate with Google Sheets using GitHub Actions secrets."""
+    try:
+        creds_json = os.environ["GOOGLE_CREDS"]
+        creds_dict = json.loads(creds_json)
+
+        creds = Credentials.from_service_account_info(
+            creds_dict,
+            scopes=[
+                "https://www.googleapis.com/auth/spreadsheets",
+                "https://www.googleapis.com/auth/drive",
+            ],
+        )
+
+        return gspread.authorize(creds)
+
+    except KeyError as exc:
+        raise RuntimeError(
+            f"Missing required environment variable: {exc}"
+        ) from exc
+
+    except json.JSONDecodeError as exc:
+        raise RuntimeError(
+            "GOOGLE_CREDS is not valid JSON."
+        ) from exc
+
+
+def open_spreadsheet(gc: gspread.Client) -> gspread.Spreadsheet:
+    """Open the configured Google Spreadsheet."""
+    try:
+        spreadsheet_id = os.environ["SPREADSHEET_ID"]
+    except KeyError as exc:
+        raise RuntimeError(
+            "Missing required environment variable: SPREADSHEET_ID"
+        ) from exc
+
+    try:
+        spreadsheet = gc.open_by_key(spreadsheet_id)
+        print(f"Opened spreadsheet: '{spreadsheet.title}'")
+        return spreadsheet
+
+    except Exception as exc:
+        raise RuntimeError(
+            f"Could not open spreadsheet with SPREADSHEET_ID: {exc}"
+        ) from exc
 
 def load_sheet_as_df(spreadsheet: gspread.Spreadsheet, tab_name: str) -> pd.DataFrame:
     """Loads a tab into a DataFrame using raw values (not get_all_records),
