@@ -257,15 +257,20 @@ def format_report_layout(ws: gspread.Worksheet, total_rows: int, max_cols_letter
     all_values = ws.get_all_values()
     formats = []
 
-    ws.update_configuration({"textFormat": {"fontSize": 10}})
+    # 1. Default font size across the whole written range (was a bogus
+    # ws.update_configuration() call - not a real gspread method).
+    formats.append({
+        "range": f"A1:{max_cols_letter}{total_rows}",
+        "format": {"textFormat": {"fontSize": 10}},
+    })
 
-    # 1. Base alignment formatting pass (Center numerical metrics across C through L)
+    # 2. Base alignment formatting pass (Center numerical metrics across C through L)
     formats.append({
         "range": f"C1:{max_cols_letter}{total_rows}",
         "format": center_metrics_theme
     })
 
-    # 2. Row by row rule parser scanning for dynamic styling placements
+    # 3. Row by row rule parser scanning for dynamic styling placements
     for idx, row in enumerate(all_values):
         row_num = idx + 1
         row_str = " ".join([str(cell) for cell in row]).upper()
@@ -296,7 +301,7 @@ def format_report_layout(ws: gspread.Worksheet, total_rows: int, max_cols_letter
     if formats:
         ws.batch_format(formats)
 
-    ws.update_view_setting(show_grid_lines=True)
+    ws.show_gridlines()
     print("Report layout styling successfully drawn.")
 
 
