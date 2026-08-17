@@ -573,11 +573,50 @@ def build_offense_explosive_section(explosive: dict) -> List[Row]:
 # Full OFFENSE report assembly
 # ---------------------------------------------------------------------------
 
+def build_offense_efficiency_section(title: str, items: List["analysis.FormationPlayEfficiency"]) -> List[Row]:
+    """Formation+play success-rate table - 'does this play work,' not just
+    'how often do we call it.' Used for run/pass/red-zone/3rd-down."""
+    rows: List[Row] = [_section_header(title)]
+    if not items:
+        rows.append(["(none yet)"])
+        rows.append(_blank_row())
+        return rows
+
+    rows.append(["Formation", "Play", "Attempts", "Success", "Rate", "Avg Gain"])
+    for i in items:
+        rows.append([i.formation, i.play_name, str(i.attempts), str(i.successes),
+                     f"{i.success_rate:.1f}%", f"{i.avg_gain:.1f}"])
+    rows.append(_blank_row())
+    return rows
+
+
+def build_offense_explosive_by_formation_section(title: str, items: List["analysis.FormationPlayCount"]) -> List[Row]:
+    """Explosive-play counts broken out by formation+play, not just play -
+    complements build_offense_explosive_section's overall (play-only) view."""
+    rows: List[Row] = [_section_header(title)]
+    if not items:
+        rows.append(["(none yet)"])
+        rows.append(_blank_row())
+        return rows
+
+    rows.append(["Formation", "Play", "Count"])
+    for i in items:
+        rows.append([i.formation, i.play_name, str(i.count)])
+    rows.append(_blank_row())
+    return rows
+
+
 def build_offense_report(
     summary: Summary,
     formations: List[FormationSummary],
     top_runs: List[PlayCallStat],
     top_passes: List[PlayCallStat],
+    run_efficiency: List["analysis.FormationPlayEfficiency"],
+    explosive_runs_by_formation: List["analysis.FormationPlayCount"],
+    pass_efficiency: List["analysis.FormationPlayEfficiency"],
+    explosive_passes_by_formation: List["analysis.FormationPlayCount"],
+    red_zone_efficiency: List["analysis.FormationPlayEfficiency"],
+    third_down_efficiency: List["analysis.FormationPlayEfficiency"],
     down_distance_summary: List[SituationSelfSummary],
     field_zone_summary: List[SituationSelfSummary],
     field_position_available: bool,
@@ -591,6 +630,13 @@ def build_offense_report(
     rows += build_offense_formations_section(formations)
     rows += build_offense_top_plays_section("TOP RUN PLAYS", top_runs)
     rows += build_offense_top_plays_section("TOP PASS PLAYS", top_passes)
+
+    rows += build_offense_efficiency_section("RUN EFFICIENCY (4+ YARDS)", run_efficiency)
+    rows += build_offense_explosive_by_formation_section("EXPLOSIVE RUNS BY FORMATION (10+ YARDS)", explosive_runs_by_formation)
+    rows += build_offense_efficiency_section("PASS EFFICIENCY (7+ YARDS)", pass_efficiency)
+    rows += build_offense_explosive_by_formation_section("EXPLOSIVE PASSES BY FORMATION (15+ YARDS)", explosive_passes_by_formation)
+    rows += build_offense_efficiency_section("RED ZONE EFFICIENCY", red_zone_efficiency)
+    rows += build_offense_efficiency_section("3RD DOWN EFFICIENCY", third_down_efficiency)
 
     rows += build_offense_situation_section(
         "DOWN & DISTANCE (SELF)", down_distance_summary,

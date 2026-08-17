@@ -24,70 +24,57 @@ from google.oauth2.service_account import Credentials
 
 import config
 
+
 def get_client() -> gspread.Client:
-    """Authenticate with Google Sheets using GitHub Actions secrets."""
+    """Authenticates with the service account and returns a gspread client."""
     try:
-        creds_json = os.environ["GOOGLE_CREDS"]
-        creds_dict = json.loads(creds_json)
-
-        creds = Credentials.from_service_account_info(
-            creds_dict,
-            scopes=[
-                "https://www.googleapis.com/auth/spreadsheets",
-                "https://www.googleapis.com/auth/drive",
-            ],
-        )
-
-        return gspread.authorize(creds)
-
+        creds_json = os.environ[config.ENV_GOOGLE_CREDS]
     except KeyError as exc:
-        raise RuntimeError(
-            f"Missing required environment variable: {exc}"
-        ) from exc
+        raise RuntimeError(f"Missing required environment variable: {exc}") from exc
 
+    try:
+        creds_dict = json.loads(creds_json)
     except json.JSONDecodeError as exc:
-        raise RuntimeError(
-            "GOOGLE_CREDS is not valid JSON."
-        ) from exc
+        raise RuntimeError(f"{config.ENV_GOOGLE_CREDS} is not valid JSON.") from exc
+
+    creds = Credentials.from_service_account_info(creds_dict, scopes=config.GOOGLE_SCOPES)
+    return gspread.authorize(creds)
 
 
 def open_spreadsheet(gc: gspread.Client) -> gspread.Spreadsheet:
-    """Open the configured Google Spreadsheet."""
+    """Opens the target spreadsheet, stripping any accidental whitespace
+    from the ID - a trailing newline in the GitHub secret is a common,
+    otherwise-silent cause of 'spreadsheet not found' errors."""
     try:
-        spreadsheet_id = os.environ["SPREADSHEET_ID"]
+        raw_id = os.environ[config.ENV_SPREADSHEET_ID]
     except KeyError as exc:
-        raise RuntimeError(
-            "Missing required environment variable: SPREADSHEET_ID"
-        ) from exc
+        raise RuntimeError(f"Missing required environment variable: {exc}") from exc
+
+    spreadsheet_id = raw_id.strip()
+    if raw_id != spreadsheet_id:
+        print(f"Warning: {config.ENV_SPREADSHEET_ID} had leading/trailing whitespace - stripped it.")
+    print(f"Spreadsheet ID length: {len(spreadsheet_id)}")
 
     try:
         spreadsheet = gc.open_by_key(spreadsheet_id)
-        print(f"Opened spreadsheet: '{spreadsheet.title}'")
-        return spreadsheet
-
     except Exception as exc:
-        raise RuntimeError(
-            f"Could not open spreadsheet with SPREADSHEET_ID: {exc}"
-        ) from exc
+        raise RuntimeError(f"Could not open spreadsheet with {config.ENV_SPREADSHEET_ID}: {exc}") from exc
 
-def validate_required_tabs(
-    spreadsheet: gspread.Spreadsheet,
-    required_tabs: List[str],
-) -> None:
-    """Verify that all required Google Sheet tabs exist."""
-    existing_tabs = {ws.title for ws in spreadsheet.worksheets()}
+    print(f"Opened spreadsheet: '{spreadsheet.title}'")
+    return spreadsheet
 
-    missing = [
-        tab_name for tab_name in required_tabs
-        if tab_name not in existing_tabs
-    ]
 
+def validate_required_tabs(spreadsheet: gspread.Spreadsheet, required: List[str]) -> None:
+    """Confirms every tab in `required` exists before any analysis runs."""
+    existing_titles = [ws.title for ws in spreadsheet.worksheets()]
+    print(f"Tabs found in spreadsheet: {existing_titles}")
+
+    missing = [name for name in required if name not in existing_titles]
     if missing:
-        raise RuntimeError(
-            f"Missing required sheet tab(s): {', '.join(missing)}"
-        )
+        raise RuntimeError(f"Missing required sheet tab(s): {', '.join(missing)}. "
+                            f"Available tabs are: {existing_titles}")
 
-    print(f"Required tabs found: {', '.join(required_tabs)}")    
+    print(f"Required tabs found: {', '.join(required)}")
 
 
 def load_sheet_as_df(spreadsheet: gspread.Spreadsheet, tab_name: str) -> pd.DataFrame:
