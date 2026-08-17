@@ -27,7 +27,7 @@ def main() -> None:
         print(f"ERROR: Failed to authenticate or open spreadsheet: {exc}")
         sys.exit(1)
 
-    required_tabs = [config.WEEKLY_DATA_SHEET_NAME, config.ODK_SHEET_NAME]
+    required_tabs = [config.SCOUT_SHEET_NAME, config.ODK_SHEET_NAME]
     try:
         sheets.validate_required_tabs(spreadsheet, required_tabs)
     except RuntimeError as exc:
@@ -35,7 +35,7 @@ def main() -> None:
         sys.exit(1)
 
     print("Loading weekly scout data...")
-    scout_df = sheets.load_sheet_as_df(spreadsheet, config.WEEKLY_DATA_SHEET_NAME)
+    scout_df = sheets.load_sheet_as_df(spreadsheet, config.SCOUT_SHEET_NAME)
     scout_ready = not scout_df.empty
     if scout_ready:
         scout_df = analysis.add_situational_columns(scout_df)

@@ -70,6 +70,26 @@ def open_spreadsheet(gc: gspread.Client) -> gspread.Spreadsheet:
             f"Could not open spreadsheet with SPREADSHEET_ID: {exc}"
         ) from exc
 
+def validate_required_tabs(
+    spreadsheet: gspread.Spreadsheet,
+    required_tabs: List[str],
+) -> None:
+    """Verify that all required Google Sheet tabs exist."""
+    existing_tabs = {ws.title for ws in spreadsheet.worksheets()}
+
+    missing = [
+        tab_name for tab_name in required_tabs
+        if tab_name not in existing_tabs
+    ]
+
+    if missing:
+        raise RuntimeError(
+            f"Missing required sheet tab(s): {', '.join(missing)}"
+        )
+
+    print(f"Required tabs found: {', '.join(required_tabs)}")    
+
+
 def load_sheet_as_df(spreadsheet: gspread.Spreadsheet, tab_name: str) -> pd.DataFrame:
     """Loads a tab into a DataFrame using raw values (not get_all_records),
     so a blank leading row or a stray duplicate header cell doesn't silently
