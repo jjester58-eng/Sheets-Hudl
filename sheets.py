@@ -77,6 +77,27 @@ def validate_required_tabs(spreadsheet: gspread.Spreadsheet, required: List[str]
     print(f"Required tabs found: {', '.join(required)}")
 
 
+def _dedupe_headers(headers: List[str]) -> List[str]:
+    """Guarantees every header is unique before it becomes a DataFrame
+    column label. Blank headers (a sheet's used range wider than its actual
+    data - the ODK crash: 26 columns reported, only 18 named) all collapse
+    to the same '' label otherwise, and any duplicate label makes df[col]
+    return a DataFrame instead of a Series, breaking every .str/.astype
+    call downstream. Blank -> 'UNNAMED', 'UNNAMED_2', ...; a real duplicate
+    name -> 'NAME', 'NAME_2', ..."""
+    seen: dict = {}
+    result = []
+    for h in headers:
+        name = h if h else "UNNAMED"
+        if name in seen:
+            seen[name] += 1
+            result.append(f"{name}_{seen[name]}")
+        else:
+            seen[name] = 1
+            result.append(name)
+    return result
+
+
 def load_sheet_as_df(spreadsheet: gspread.Spreadsheet, tab_name: str) -> pd.DataFrame:
     """Loads a tab into a DataFrame using raw values (not get_all_records),
     so a blank leading row or a stray duplicate header cell doesn't silently
@@ -97,7 +118,7 @@ def load_sheet_as_df(spreadsheet: gspread.Spreadsheet, tab_name: str) -> pd.Data
 
     # Use the first non-blank row as the header row.
     header_idx = next((i for i, r in enumerate(rows) if any(cell.strip() for cell in r)), 0)
-    headers = [str(col).strip() for col in rows[header_idx]]
+    headers = _dedupe_headers([str(col).strip() for col in rows[header_idx]])
     data = rows[header_idx + 1:]
 
     df = pd.DataFrame(data, columns=headers)
