@@ -85,7 +85,7 @@ def main() -> None:
 
 
 def _write_defense_report(spreadsheet, scout_df, scout_ready: bool, live_df, live_ready: bool) -> None:
-    """DEF ANALYSIS: opponent offense, scout vs live comparison."""
+    """DEF ANALYSIS: condensed in-game coach view, opponent offense scout vs live."""
 
     if live_ready:
         def_analysis = analysis.analyze_def_play_types(live_df)
@@ -97,40 +97,43 @@ def _write_defense_report(spreadsheet, scout_df, scout_ready: bool, live_df, liv
 
     scout_summary = analysis.build_summary(scout_df) if scout_ready else analysis.Summary(0, 0.0, 0.0, 0, 0)
     live_summary = analysis.build_summary(live_df) if live_ready else analysis.Summary(0, 0.0, 0.0, 0, 0)
-    scout_top_runs = analysis.build_top_plays(scout_df, config.PLAY_TYPE_RUN) if scout_ready else []
-    scout_top_passes = analysis.build_top_plays(scout_df, config.PLAY_TYPE_PASS) if scout_ready else []
-    live_top_runs = analysis.build_top_plays(live_df, config.PLAY_TYPE_RUN) if live_ready else []
-    live_top_passes = analysis.build_top_plays(live_df, config.PLAY_TYPE_PASS) if live_ready else []
-
     identity = analysis.build_identity_comparison(scout_summary, live_summary)
 
+    # Generously sized so build_quick_formations_section has enough
+    # candidates to pick the true top 3 BY LIVE USAGE from (not the full
+    # report's max(scout,live) ranking).
     formation_comparisons = (
-        analysis.build_formation_comparisons(scout_df, live_df) if scout_ready and live_ready else []
+        analysis.build_formation_comparisons(scout_df, live_df, top_n=config.TOP_N_FORMATIONS * 5)
+        if scout_ready and live_ready else []
     )
-    formation_tendencies = analysis.build_top_formations(scout_df, top_n=config.TOP_N_FORMATIONS * 2) if scout_ready else []
 
     down_distance_expectations = (
         analysis.build_down_distance_expectations(scout_df, live_df) if scout_ready and live_ready else []
     )
+    # Not rendered as a table (excluded from the quick view on purpose) -
+    # still computed because build_coach_alerts uses it to generate
+    # field-zone-based Notable items.
     field_zone_expectations = (
         analysis.build_field_zone_expectations(scout_df, live_df) if scout_ready and live_ready else []
     )
-    field_position_available = (
-        (analysis.has_field_position_data(scout_df) if scout_ready else False)
-        or (analysis.has_field_position_data(live_df) if live_ready else False)
-    )
-
-    explosive = analysis.build_explosive_comparison(scout_df, live_df) if scout_ready and live_ready else []
 
     formation_changes = analysis.compare_formations(scout_df, live_df) if scout_ready and live_ready else []
     run_changes = analysis.compare_plays(scout_df, live_df, config.PLAY_TYPE_RUN) if scout_ready and live_ready else []
     pass_changes = analysis.compare_plays(scout_df, live_df, config.PLAY_TYPE_PASS) if scout_ready and live_ready else []
 
-    biggest_changes = (
-        analysis.build_biggest_changes(formation_changes, run_changes, pass_changes)
-        if scout_ready and live_ready
-        else analysis.BiggestChanges([], [], [], [])
-    )
+    top_run_changes = sorted(run_changes, key=lambda c: c.live_count, reverse=True)[:3]
+    top_run_changes = [c for c in top_run_changes if c.live_count > 0]
+    top_run_plays = [
+        (c, analysis.most_common_formation(live_df, config.PLAY_TYPE_RUN, c.play_name))
+        for c in top_run_changes
+    ]
+
+    top_pass_changes = sorted(pass_changes, key=lambda c: c.live_count, reverse=True)[:3]
+    top_pass_changes = [c for c in top_pass_changes if c.live_count > 0]
+    top_pass_plays = [
+        (c, analysis.most_common_formation(live_df, config.PLAY_TYPE_PASS, c.play_name))
+        for c in top_pass_changes
+    ]
 
     coach_alerts = (
         analysis.build_coach_alerts(
@@ -142,29 +145,20 @@ def _write_defense_report(spreadsheet, scout_df, scout_ready: bool, live_df, liv
         else []
     )
 
-    live_plays_ready = live_summary.total_plays >= config.MIN_LIVE_PLAYS_FOR_COMPARISON
-    game_plan_score = (
-        analysis.compute_game_plan_score(
-            formation_changes, scout_summary, live_summary,
-            scout_top_runs, scout_top_passes, live_top_runs, live_top_passes,
-            down_distance_expectations,
-        )
-        if scout_ready and live_ready and live_plays_ready
-        else None
+    verdict = (
+        analysis.build_scout_fidelity_verdict(identity, formation_changes, run_changes, pass_changes)
+        if scout_ready and live_ready
+        else "Not enough data yet"
     )
 
-    report_rows = reports.build_full_report(
+    report_rows = reports.build_quick_defense_report(
         identity=identity,
-        game_plan_score=game_plan_score,
-        biggest_changes=biggest_changes,
         formation_comparisons=formation_comparisons,
-        formation_tendencies=formation_tendencies,
+        top_run_plays=top_run_plays,
+        top_pass_plays=top_pass_plays,
         down_distance_expectations=down_distance_expectations,
-        field_zone_expectations=field_zone_expectations,
-        field_position_available=field_position_available,
-        explosive=explosive,
-        coach_alerts=coach_alerts,
-        live_ready=live_plays_ready,
+        verdict=verdict,
+        notable_alerts=coach_alerts,
     )
     print(f"  DEF ANALYSIS report rows: {len(report_rows)}")
 

@@ -6,11 +6,20 @@ to write to a Google Sheet. This module does zero calculation - if you're
 computing a percentage or an average in here, it belongs in analysis.py
 instead.
 
-Two reports come out of this file:
+Three reports come out of this file:
 
-DEFENSE report (comparison-first, scout vs live):
-    Everything answers ONE question -
-        "Are they doing what we scouted, or have they changed?"
+QUICK DEFENSE VIEW (condensed in-game coach page - what DEF ANALYSIS writes):
+    Answers 7 questions in about 10 seconds, comparison-first throughout.
+    1. LIVE GAME RUN/PASS  - live snaps, run/pass %, scout %, change
+    2. TOP 3 FORMATIONS    - by live usage, run/pass % both sides, change
+    3. TOP 3 RUN PLAYS     - by live usage, with formation, scout % vs live %
+    4. TOP 3 PASS PLAYS    - same shape
+    5. DOWN/DISTANCE       - 1st & Long, 3rd & Short/Medium/Long only
+    6. TRUE TO SCOUT?      - one-word verdict
+    7. NOTABLE             - a short, capped list of coach alerts
+
+FULL DEFENSE report (detailed, comparison-first - kept for reference/a
+future postgame tab, not currently wired into analyze_tendencies.py):
     1. OVERALL IDENTITY     - who are they, and have they changed?
     2. GAME PLAN MATCH      - one visual bar, one verdict
     3. BIGGEST CHANGES      - the movers a coordinator reads first
@@ -35,13 +44,14 @@ Every function returns a List[List[str]] - each inner list is one row of
 cells, ready to hand to sheets.py for writing.
 """
 
-from typing import List, Optional
+from typing import List, Optional, Tuple
 
 import config
 from analysis import (
     FormationSummary,
     PlayCallStat,
     PlayProbability,
+    PlayChange,
     IdentityComparison,
     FormationComparison,
     SituationExpectation,
@@ -455,6 +465,138 @@ def build_full_report(
     rows += build_explosive_section(explosive)
     rows += build_coach_alerts_section(coach_alerts, live_ready)
 
+    return rows
+
+
+# ===========================================================================
+# QUICK DEFENSE VIEW - condensed in-game coach page (what DEF ANALYSIS
+# actually writes). 7 sections, comparison-first, no field-zone tables, no
+# detailed identity/explosive/formation-tendency tables, no long alert list.
+# ===========================================================================
+
+def build_quick_runpass_section(identity: IdentityComparison) -> List[Row]:
+    rows: List[Row] = [_section_header("LIVE GAME RUN/PASS")]
+    rows.append(["Live Snaps", str(identity.live_plays)])
+    rows.append(["Live Run/Pass", f"{_pct(identity.live_run_pct)} / {_pct(identity.live_pass_pct)}"])
+    rows.append(["Scout Run/Pass", f"{_pct(identity.scout_run_pct)} / {_pct(identity.scout_pass_pct)}"])
+    rows.append(["Change (Pass)", _arrow_change(identity.pass_pct_change)])
+    rows.append(_blank_row())
+    return rows
+
+
+def build_quick_formations_section(comparisons: List[FormationComparison], top_n: int = 3) -> List[Row]:
+    """Ranked by LIVE usage specifically (not max(scout,live) like the full
+    report's Top Formations) - caller should pass in a generously-sized
+    comparisons list so there's enough to pick the true live top N from."""
+    rows: List[Row] = [_section_header("TOP 3 FORMATIONS")]
+    top = sorted(comparisons, key=lambda c: c.live_count, reverse=True)[:top_n]
+    top = [c for c in top if c.live_count > 0]
+    if not top:
+        rows.append(["(no live formation data yet)"])
+        rows.append(_blank_row())
+        return rows
+
+    rows.append(["Formation", "Snaps", "Run%", "Pass%", "Scout R%", "Scout P%", "Change"])
+    for f in top:
+        rows.append([
+            f.formation,
+            str(f.live_count),
+            _pct(f.live_run_pct),
+            _pct(f.live_pass_pct),
+            _pct(f.scout_run_pct),
+            _pct(f.scout_pass_pct),
+            _arrow_change(f.change),
+        ])
+    rows.append(_blank_row())
+    return rows
+
+
+def build_quick_plays_section(title: str, items: List[Tuple[PlayChange, str]]) -> List[Row]:
+    """items: (PlayChange, formation) pairs, already picked and ordered by
+    the caller (top 3 by live usage) - this function only renders."""
+    rows: List[Row] = [_section_header(title)]
+    if not items:
+        rows.append(["(none yet)"])
+        rows.append(_blank_row())
+        return rows
+
+    rows.append(["Play", "Formation", "Snaps", "Live%", "Scout%", "Change"])
+    for c, formation in items:
+        rows.append([
+            c.play_name,
+            formation,
+            str(c.live_count),
+            _pct(c.live_pct),
+            _pct(c.scout_pct),
+            "NEW" if c.is_new else _arrow_change(c.change),
+        ])
+    rows.append(_blank_row())
+    return rows
+
+
+def build_quick_down_distance_section(expectations: List[SituationExpectation]) -> List[Row]:
+    """Only 1st & Long and all three 3rd-down buckets - 1st & Short/Medium
+    are excluded on purpose (too rare to be worth a line in a quick view)."""
+    rows: List[Row] = [_section_header("DOWN/DISTANCE")]
+    wanted = ["1st & Long", "3rd & Short", "3rd & Medium", "3rd & Long"]
+    by_label = {e.label: e for e in expectations}
+    found = [by_label[w] for w in wanted if w in by_label]
+    if not found:
+        rows.append(["(no down/distance data yet)"])
+        rows.append(_blank_row())
+        return rows
+
+    rows.append(["Situation", "Live R%", "Live P%", "Scout R%", "Scout P%", "Change"])
+    for e in found:
+        rows.append([
+            e.label,
+            _pct(e.live_run_pct),
+            _pct(e.live_pass_pct),
+            _pct(e.scout_run_pct),
+            _pct(e.scout_pass_pct),
+            _arrow_change(e.pass_pct_change),
+        ])
+    rows.append(_blank_row())
+    return rows
+
+
+def build_quick_verdict_section(verdict: str) -> List[Row]:
+    rows: List[Row] = [_section_header("TRUE TO SCOUT?")]
+    rows.append([verdict])
+    rows.append(_blank_row())
+    return rows
+
+
+def build_quick_notable_section(alerts: List[str], max_items: int = 5) -> List[Row]:
+    rows: List[Row] = [_section_header("NOTABLE")]
+    if not alerts:
+        rows.append([f"{CHECK} Nothing unusual."])
+        rows.append(_blank_row())
+        return rows
+    for alert in alerts[:max_items]:
+        rows.append([f"• {alert}"])
+    rows.append(_blank_row())
+    return rows
+
+
+def build_quick_defense_report(
+    identity: IdentityComparison,
+    formation_comparisons: List[FormationComparison],
+    top_run_plays: List[Tuple[PlayChange, str]],
+    top_pass_plays: List[Tuple[PlayChange, str]],
+    down_distance_expectations: List[SituationExpectation],
+    verdict: str,
+    notable_alerts: List[str],
+) -> List[Row]:
+    """Assembles the 7-section condensed defense view, in order."""
+    rows: List[Row] = []
+    rows += build_quick_runpass_section(identity)
+    rows += build_quick_formations_section(formation_comparisons)
+    rows += build_quick_plays_section("TOP 3 RUN PLAYS", top_run_plays)
+    rows += build_quick_plays_section("TOP 3 PASS PLAYS", top_pass_plays)
+    rows += build_quick_down_distance_section(down_distance_expectations)
+    rows += build_quick_verdict_section(verdict)
+    rows += build_quick_notable_section(notable_alerts)
     return rows
 
 

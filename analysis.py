@@ -1337,3 +1337,52 @@ def build_third_down_efficiency(df: pd.DataFrame) -> List[FormationPlayEfficienc
             avg_gain=round(group[config.COL_GAIN_LOSS].mean(), 1) if attempts else 0.0,
         ))
     return sorted(results, key=lambda r: (-r.successes, -r.attempts))
+
+
+# ---------------------------------------------------------------------------
+# Quick Defense View support (DEF ANALYSIS condensed report) - two small
+# additive helpers. No existing function pairs a play with its formation,
+# and no existing function distills scout-vs-live into one coach-friendly
+# verdict word, so those are the only two genuinely new pieces needed.
+# ---------------------------------------------------------------------------
+
+def most_common_formation(df: pd.DataFrame, play_type: str, play_name: str) -> str:
+    """Returns the formation this specific play is called from most often
+    within df (filtered to play_type and play_name). '—' if unknown."""
+    if (df.empty or config.COL_FORMATION not in df.columns
+            or config.COL_PLAY_CALL not in df.columns or config.COL_PLAY_TYPE not in df.columns):
+        return "—"
+    subset = df[(df[config.COL_PLAY_TYPE] == play_type) & (df[config.COL_PLAY_CALL] == play_name)]
+    if subset.empty:
+        return "—"
+    counts = subset[config.COL_FORMATION].value_counts()
+    return counts.index[0] if not counts.empty else "—"
+
+
+def build_scout_fidelity_verdict(
+    identity: IdentityComparison,
+    formation_changes: List[FormationChange],
+    run_changes: List[PlayChange],
+    pass_changes: List[PlayChange],
+) -> str:
+    """One coach-friendly word: are they doing what we scouted, or changing
+    things up? Reuses the exact same thresholds build_coach_alerts() already
+    uses (ALERT_RUNPASS_CHANGE_PCT, ALERT_FORMATION_CHANGE_PCT,
+    ALERT_PLAY_CHANGE_PCT, NEW_PLAY_MIN_LIVE_COUNT) - no new thresholds.
+    Checked in priority order: run/pass lean first (biggest-picture signal),
+    then formation usage, then individual play calls."""
+    if abs(identity.pass_pct_change) >= config.ALERT_RUNPASS_CHANGE_PCT:
+        return "LEANING MORE PASS" if identity.pass_pct_change > 0 else "LEANING MORE RUN"
+
+    if any(c.is_new and c.live_pct > 0 for c in formation_changes):
+        return "FORMATION CHANGE"
+    if any(not c.is_new and abs(c.change) >= config.ALERT_FORMATION_CHANGE_PCT for c in formation_changes):
+        return "FORMATION CHANGE"
+
+    play_changes = run_changes + pass_changes
+    if any(c.is_new and c.live_count >= config.NEW_PLAY_MIN_LIVE_COUNT for c in play_changes):
+        return "PLAY CALL CHANGE"
+    if any(not c.is_new and abs(c.change) >= config.ALERT_PLAY_CHANGE_PCT for c in play_changes):
+        return "PLAY CALL CHANGE"
+
+    return "TRUE TO SCOUT"
