@@ -225,33 +225,29 @@ def format_report_layout(ws: gspread.Worksheet, total_rows: int, max_cols_letter
     print("Formatting report presentation layout...")
 
     # Color Palette Specifications (Dark Navy Blue Theme)
+    # NOTE: these are CellFormat dicts (backgroundColor, textFormat, etc.
+    # directly) - gspread's batch_format() wraps each one in
+    # userEnteredFormat itself. Adding that wrapper here double-nests it
+    # and the Sheets API rejects the request outright.
     blue_theme = {
-        "userEnteredFormat": {
-            "backgroundColor": {"red": 0.04, "green": 0.22, "blue": 0.42},
-            "textFormat": {"foregroundColor": {"red": 1.0, "green": 1.0, "blue": 1.0}, "bold": True, "fontSize": 11},
-            "horizontalAlignment": "LEFT"
-        }
+        "backgroundColor": {"red": 0.04, "green": 0.22, "blue": 0.42},
+        "textFormat": {"foregroundColor": {"red": 1.0, "green": 1.0, "blue": 1.0}, "bold": True, "fontSize": 11},
+        "horizontalAlignment": "LEFT"
     }
 
     table_header_theme = {
-        "userEnteredFormat": {
-            "backgroundColor": {"red": 0.92, "green": 0.92, "blue": 0.94},
-            "textFormat": {"foregroundColor": {"red": 0.0, "green": 0.0, "blue": 0.0}, "bold": True, "fontSize": 10},
-            "horizontalAlignment": "CENTER"
-        }
+        "backgroundColor": {"red": 0.92, "green": 0.92, "blue": 0.94},
+        "textFormat": {"foregroundColor": {"red": 0.0, "green": 0.0, "blue": 0.0}, "bold": True, "fontSize": 10},
+        "horizontalAlignment": "CENTER"
     }
 
     identifiers_theme = {
-        "userEnteredFormat": {
-            "textFormat": {"bold": True},
-            "horizontalAlignment": "LEFT"
-        }
+        "textFormat": {"bold": True},
+        "horizontalAlignment": "LEFT"
     }
 
     center_metrics_theme = {
-        "userEnteredFormat": {
-            "horizontalAlignment": "CENTER"
-        }
+        "horizontalAlignment": "CENTER"
     }
 
     all_values = ws.get_all_values()
@@ -316,8 +312,8 @@ def apply_trend_formatting(ws: gspread.Worksheet, trend_types: List[str]) -> Non
 
     print("Applying conditional trend markers...")
 
-    green_format = {"userEnteredFormat": {"backgroundColor": {"red": 0.88, "green": 0.95, "blue": 0.88}}}
-    red_format = {"userEnteredFormat": {"backgroundColor": {"red": 0.97, "green": 0.87, "blue": 0.87}}}
+    green_format = {"backgroundColor": {"red": 0.88, "green": 0.95, "blue": 0.88}}
+    red_format = {"backgroundColor": {"red": 0.97, "green": 0.87, "blue": 0.87}}
 
     formats = []
 
