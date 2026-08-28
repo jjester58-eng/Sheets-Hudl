@@ -31,7 +31,6 @@ COL_DOWN: str = "DN"
 COL_DISTANCE: str = "DIST"
 COL_HASH: str = "HASH"
 COL_GAIN_LOSS: str = "GN/LS"
-COL_GAIN_LOSS: str = "GN/LS"
 COL_BALL_CARRIER: str = "BALL CARRIER"
 COL_FIELD_POSITION: str = "YARD LN"     # signed yard line, offense perspective
 COL_PLAY_TYPE: str = "PLAY TYPE"        # expected values: "Run" / "Pass"
