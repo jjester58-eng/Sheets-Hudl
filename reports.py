@@ -662,7 +662,7 @@ def build_offense_identity_section(
     for index in range(row_count):
         left = identity_rows[index] if index < len(identity_rows) else ["", ""]
         right = carrier_rows[index] if index < len(carrier_rows) else ["", "", ""]
-        rows.append(left + ["", "", ""] + right)
+        rows.append(left + ["", "", "", ""] + right)
     return rows
 
 
