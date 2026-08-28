@@ -60,6 +60,8 @@ from analysis import (
     BiggestChanges,
     GamePlanScore,
     Summary,
+    PlayTypeYards,
+    BallCarrierYards,
 )
 
 Row = List[str]
@@ -89,6 +91,11 @@ def _sub_header(title: str) -> Row:
 
 def _pct(value: float) -> str:
     return f"{value:.0f}%"
+
+
+def _yards(value: float) -> str:
+    """Show whole-number yardage cleanly, while preserving fractional values."""
+    return str(int(value)) if float(value).is_integer() else f"{value:.1f}"
 
 
 def _run_pass_cell(run_pct: float, pass_pct: float, play_count: int) -> str:
@@ -474,10 +481,19 @@ def build_full_report(
 # detailed identity/explosive/formation-tendency tables, no long alert list.
 # ===========================================================================
 
-def build_quick_runpass_section(identity: IdentityComparison) -> List[Row]:
-    rows: List[Row] = [_section_header("LIVE GAME RUN/PASS")]
-    rows.append(["Live Snaps", str(identity.live_plays)])
-    rows.append(["Live Run/Pass", f"{_pct(identity.live_run_pct)} / {_pct(identity.live_pass_pct)}"])
+def build_quick_runpass_section(
+    identity: IdentityComparison,
+    live_yards: PlayTypeYards,
+) -> List[Row]:
+    """Top-of-page live snap/call information plus run/pass yardage totals."""
+    rows: List[Row] = [[_section_header("LIVE GAME RUN/PASS")[0], "", "LIVE YARDS", "TOTAL"]]
+    rows.append(["Live Snaps", str(identity.live_plays), "Rushing", _yards(live_yards.rushing_yards)])
+    rows.append([
+        "Live Run/Pass",
+        f"{_pct(identity.live_run_pct)} / {_pct(identity.live_pass_pct)}",
+        "Passing",
+        _yards(live_yards.passing_yards),
+    ])
     rows.append(["Scout Run/Pass", f"{_pct(identity.scout_run_pct)} / {_pct(identity.scout_pass_pct)}"])
     rows.append(["Change (Pass)", _arrow_change(identity.pass_pct_change)])
     rows.append(_blank_row())
@@ -587,10 +603,11 @@ def build_quick_defense_report(
     down_distance_expectations: List[SituationExpectation],
     verdict: str,
     notable_alerts: List[str],
+    live_yards: PlayTypeYards,
 ) -> List[Row]:
     """Assembles the 7-section condensed defense view, in order."""
     rows: List[Row] = []
-    rows += build_quick_runpass_section(identity)
+    rows += build_quick_runpass_section(identity, live_yards)
     rows += build_quick_formations_section(formation_comparisons)
     rows += build_quick_plays_section("TOP 3 RUN PLAYS", top_run_plays)
     rows += build_quick_plays_section("TOP 3 PASS PLAYS", top_pass_plays)
@@ -608,13 +625,44 @@ def build_quick_defense_report(
 # 1. OFFENSE IDENTITY
 # ---------------------------------------------------------------------------
 
-def build_offense_identity_section(summary: Summary) -> List[Row]:
-    rows: List[Row] = [_section_header("OFFENSE IDENTITY")]
-    rows.append(["Plays", str(summary.total_plays)])
-    rows.append(["Run/Pass", f"{_pct(summary.run_pct)}/{_pct(summary.pass_pct)}"])
-    rows.append(["X-Run (10+)", str(summary.explosive_run_count)])
-    rows.append(["X-Pass (15+)", str(summary.explosive_pass_count)])
-    rows.append(_blank_row())
+def build_offense_identity_section(
+    summary: Summary,
+    ball_carriers: List[BallCarrierYards],
+    team_yards: PlayTypeYards,
+) -> List[Row]:
+    """Renders identity in A:B and ball-carrier yardage alongside it in F:H."""
+    identity_rows: List[Row] = [
+        [_section_header("OFFENSE IDENTITY")[0], ""],
+        ["Plays", str(summary.total_plays)],
+        ["Run/Pass", f"{_pct(summary.run_pct)}/{_pct(summary.pass_pct)}"],
+        ["X-Run (10+)", str(summary.explosive_run_count)],
+        ["X-Pass (15+)", str(summary.explosive_pass_count)],
+        _blank_row(),
+    ]
+    carrier_rows: List[Row] = [
+        ["BALL CARRIER YARDS", "", ""],
+        ["Ball Carrier", "Rush Yds", "Rec Yds"],
+    ]
+    carrier_rows.extend([
+        [
+            player.ball_carrier,
+            _yards(player.rushing_yards),
+            _yards(player.receiving_yards),
+        ]
+        for player in ball_carriers
+    ])
+    carrier_rows.append([
+        "TEAM TOTAL",
+        _yards(team_yards.rushing_yards),
+        _yards(team_yards.passing_yards),
+    ])
+
+    row_count = max(len(identity_rows), len(carrier_rows))
+    rows: List[Row] = []
+    for index in range(row_count):
+        left = identity_rows[index] if index < len(identity_rows) else ["", ""]
+        right = carrier_rows[index] if index < len(carrier_rows) else ["", "", ""]
+        rows.append(left + ["", "", ""] + right)
     return rows
 
 
@@ -763,12 +811,14 @@ def build_offense_report(
     field_zone_summary: List[SituationSelfSummary],
     field_position_available: bool,
     explosive: dict,
+    ball_carriers: List[BallCarrierYards],
+    team_yards: PlayTypeYards,
 ) -> List[Row]:
     """Assembles every offense-report section, in order, into the final
     list of rows. No scout comparison anywhere - this is self-scouting."""
     rows: List[Row] = []
 
-    rows += build_offense_identity_section(summary)
+    rows += build_offense_identity_section(summary, ball_carriers, team_yards)
     rows += build_offense_formations_section(formations)
     rows += build_offense_top_plays_section("TOP RUN PLAYS", top_runs)
     rows += build_offense_top_plays_section("TOP PASS PLAYS", top_passes)

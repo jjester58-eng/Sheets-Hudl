@@ -34,6 +34,21 @@ class Summary:
 
 
 @dataclass
+class PlayTypeYards:
+    """Run/pass yardage totals from a play dataframe."""
+    rushing_yards: float
+    passing_yards: float
+
+
+@dataclass
+class BallCarrierYards:
+    """One offensive ball carrier's rushing and receiving yardage."""
+    ball_carrier: str
+    rushing_yards: float
+    receiving_yards: float
+
+
+@dataclass
 class PlayCallStat:
     """A single play call's usage and effectiveness."""
     play_name: str
@@ -213,6 +228,85 @@ def _run_pass_split(df: pd.DataFrame) -> tuple:
     run_pct = round(run_count / total * 100, 1) if total else 0.0
     pass_pct = round(pass_count / total * 100, 1) if total else 0.0
     return run_pct, pass_pct
+
+
+def build_play_type_yards(df: pd.DataFrame) -> PlayTypeYards:
+    """Totals GN/LS separately for Run and Pass plays.
+
+    Missing or non-numeric GN/LS values count as zero. This works for either
+    ODK side: use it for our offense in OFF ANALYSIS or the opponent offense
+    in DEF ANALYSIS.
+    """
+    required = {config.COL_PLAY_TYPE, config.COL_GAIN_LOSS}
+    if df.empty or not required.issubset(df.columns):
+        return PlayTypeYards(0.0, 0.0)
+
+    yards = pd.to_numeric(df[config.COL_GAIN_LOSS], errors="coerce").fillna(0)
+    rushing_yards = float(
+        yards[df[config.COL_PLAY_TYPE] == config.PLAY_TYPE_RUN].sum()
+    )
+    passing_yards = float(
+        yards[df[config.COL_PLAY_TYPE] == config.PLAY_TYPE_PASS].sum()
+    )
+    return PlayTypeYards(rushing_yards, passing_yards)
+
+
+def build_ball_carrier_yards(df: pd.DataFrame) -> List[BallCarrierYards]:
+    """Groups offensive ODK plays by BALL CARRIER and splits GN/LS by type.
+
+    A Run is rushing yardage and a Pass is receiving yardage. Blank ball
+    carriers are deliberately excluded so incomplete entries do not create a
+    fake player row.
+    """
+    required = {
+        config.COL_BALL_CARRIER,
+        config.COL_PLAY_TYPE,
+        config.COL_GAIN_LOSS,
+    }
+    if df.empty or not required.issubset(df.columns):
+        return []
+
+    work = df.loc[:, [
+        config.COL_BALL_CARRIER,
+        config.COL_PLAY_TYPE,
+        config.COL_GAIN_LOSS,
+    ]].copy()
+    work[config.COL_BALL_CARRIER] = (
+        work[config.COL_BALL_CARRIER].fillna("").astype(str).str.strip()
+    )
+    work = work[work[config.COL_BALL_CARRIER] != ""]
+    if work.empty:
+        return []
+
+    work["_yards"] = pd.to_numeric(
+        work[config.COL_GAIN_LOSS], errors="coerce"
+    ).fillna(0)
+
+    players = []
+    for ball_carrier, group in work.groupby(config.COL_BALL_CARRIER, sort=True):
+        rushing_yards = float(
+            group.loc[
+                group[config.COL_PLAY_TYPE] == config.PLAY_TYPE_RUN, "_yards"
+            ].sum()
+        )
+        receiving_yards = float(
+            group.loc[
+                group[config.COL_PLAY_TYPE] == config.PLAY_TYPE_PASS, "_yards"
+            ].sum()
+        )
+        players.append(BallCarrierYards(
+            ball_carrier=ball_carrier,
+            rushing_yards=rushing_yards,
+            receiving_yards=receiving_yards,
+        ))
+
+    return sorted(
+        players,
+        key=lambda player: (
+            -(player.rushing_yards + player.receiving_yards),
+            player.ball_carrier,
+        ),
+    )
 
 
 def _top_play_calls(df: pd.DataFrame, play_type: str, top_n: int) -> List[str]:

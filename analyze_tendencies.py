@@ -98,6 +98,7 @@ def _write_defense_report(spreadsheet, scout_df, scout_ready: bool, live_df, liv
     scout_summary = analysis.build_summary(scout_df) if scout_ready else analysis.Summary(0, 0.0, 0.0, 0, 0)
     live_summary = analysis.build_summary(live_df) if live_ready else analysis.Summary(0, 0.0, 0.0, 0, 0)
     identity = analysis.build_identity_comparison(scout_summary, live_summary)
+    live_yards = analysis.build_play_type_yards(live_df)
 
     # Generously sized so build_quick_formations_section has enough
     # candidates to pick the true top 3 BY LIVE USAGE from (not the full
@@ -159,6 +160,7 @@ def _write_defense_report(spreadsheet, scout_df, scout_ready: bool, live_df, liv
         down_distance_expectations=down_distance_expectations,
         verdict=verdict,
         notable_alerts=coach_alerts,
+        live_yards=live_yards,
     )
     print(f"  DEF ANALYSIS report rows: {len(report_rows)}")
 
@@ -192,6 +194,8 @@ def _write_offense_report(spreadsheet, off_live_df, off_ready: bool) -> None:
         field_zone_summary = analysis.build_field_zone_summary(off_live_df)
         field_position_available = analysis.has_field_position_data(off_live_df)
         explosive = analysis.build_explosive_report(off_live_df, top_n=config.TOP_N_PLAYS * 2)
+        ball_carriers = analysis.build_ball_carrier_yards(off_live_df)
+        team_yards = analysis.build_play_type_yards(off_live_df)
     else:
         summary = analysis.Summary(0, 0.0, 0.0, 0, 0)
         formations, top_runs, top_passes = [], [], []
@@ -201,6 +205,8 @@ def _write_offense_report(spreadsheet, off_live_df, off_ready: bool) -> None:
         down_distance_summary, field_zone_summary = [], []
         field_position_available = False
         explosive = {"runs": [], "passes": []}
+        ball_carriers = []
+        team_yards = analysis.PlayTypeYards(0.0, 0.0)
 
     report_rows = reports.build_offense_report(
         summary=summary,
@@ -217,6 +223,8 @@ def _write_offense_report(spreadsheet, off_live_df, off_ready: bool) -> None:
         field_zone_summary=field_zone_summary,
         field_position_available=field_position_available,
         explosive=explosive,
+        ball_carriers=ball_carriers,
+        team_yards=team_yards,
     )
     print(f"  OFF ANALYSIS report rows: {len(report_rows)}")
 
