@@ -639,30 +639,51 @@ def build_offense_identity_section(
         ["X-Pass (15+)", str(summary.explosive_pass_count)],
         _blank_row(),
     ]
-    carrier_rows: List[Row] = [
-        ["BALL CARRIER YARDS", "", ""],
+        carrier_rows: List[Row] = [
+        ["BALL CARRIER YARDS", "", "",],
         ["Ball Carrier", "Rush Yds", "Rec Yds"],
     ]
-    carrier_rows.extend([
+
+    # Every ball-carrier row must contain exactly 3 cells:
+    # Ball Carrier | Rush Yds | Rec Yds
+    carrier_rows.extend(
         [
-            player.ball_carrier,
-            _yards(player.rushing_yards),
-            _yards(player.receiving_yards),
+            [
+                str(player.ball_carrier),
+                _yards(player.rushing_yards),
+                _yards(player.receiving_yards),
+            ]
+            for player in ball_carriers
         ]
-        for player in ball_carriers
-    ])
+    )
+
+    # Team totals use the same 3-column structure.
     carrier_rows.append([
         "TEAM TOTAL",
         _yards(team_yards.rushing_yards),
         _yards(team_yards.passing_yards),
     ])
 
+    # Identity occupies A:B.
+    # Ball carrier section occupies F:H.
+    #
+    # A       B       C D E       F             G        H
+    # Identity        spacer      Ball Carrier  Rush     Rec
     row_count = max(len(identity_rows), len(carrier_rows))
+
     rows: List[Row] = []
+
     for index in range(row_count):
         left = identity_rows[index] if index < len(identity_rows) else ["", ""]
         right = carrier_rows[index] if index < len(carrier_rows) else ["", "", ""]
-        rows.append(left + ["", "", "", ""] + right)
+
+        # Force BOTH sides to their intended columns.
+        left = (left + ["", ""])[:2]
+        right = (right + ["", "", ""])[:3]
+
+        rows.append(left + ["", "", "",] + right)
+
+    return rows
     return rows
 
 
