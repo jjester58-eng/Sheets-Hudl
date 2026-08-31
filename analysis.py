@@ -4,11 +4,15 @@ analysis.py
 All football calculations live here.
 """
 
-from dataclasses import dataclass
-from typing import List, Optional
+from dataclasses import dataclass, field
+from typing import Optional
 import pandas as pd
 import config
 
+
+# =============================================================================
+# DATA STRUCTURES
+# =============================================================================
 
 @dataclass
 class Summary:
@@ -77,15 +81,110 @@ class FormationSummary:
     usage_pct: float
     run_pct: float
     pass_pct: float
-    top_run_plays: List[str]
-    top_pass_plays: List[str]
+    top_run_plays: list[str] = field(default_factory=list)
+    top_pass_plays: list[str] = field(default_factory=list)
 
+
+@dataclass
+class IdentityComparison:
+    scout_plays: int
+    live_plays: int
+    scout_run_pct: float
+    scout_pass_pct: float
+    live_run_pct: float
+    live_pass_pct: float
+    run_pct_change: float
+    pass_pct_change: float
+    scout_explosive_run: int
+    scout_explosive_pass: int
+    live_explosive_run: int
+    live_explosive_pass: int
+
+
+@dataclass
+class FormationChange:
+    formation: str
+    scout_pct: float
+    live_pct: float
+    change: float
+    is_new: bool
+
+
+@dataclass
+class PlayChange:
+    play_name: str
+    scout_pct: float
+    live_pct: float
+    scout_count: int
+    live_count: int
+    change: float
+    is_new: bool
+
+
+@dataclass
+class FormationComparison:
+    formation: str
+    scout_pct: float
+    live_pct: float
+    change: float
+    is_new: bool
+    scout_count: int
+    live_count: int
+    scout_run_pct: float
+    scout_pass_pct: float
+    live_run_pct: float
+    live_pass_pct: float
+    pass_pct_change: float
+    scout_top_runs: list[str] = field(default_factory=list)
+    scout_top_passes: list[str] = field(default_factory=list)
+    live_top_runs: list[str] = field(default_factory=list)
+    live_top_passes: list[str] = field(default_factory=list)
+    new_plays: list[str] = field(default_factory=list)
+    status: str = ""
+    confident: bool = False
+
+
+@dataclass
+class SituationExpectation:
+    label: str
+    scout_run_pct: float
+    scout_pass_pct: float
+    live_run_pct: float
+    live_pass_pct: float
+    scout_dominant_type: str
+    scout_dominant_pct: float
+    live_dominant_type: str
+    live_dominant_pct: float
+    scout_expected_plays: list[PlayProbability] = field(default_factory=list)
+    live_top_plays: list[PlayProbability] = field(default_factory=list)
+    scout_count: int = 0
+    live_count: int = 0
+    pass_pct_change: float = 0.0
+    verdict: str = ""
+    changed: bool = False
+    scout_confident: bool = False
+    live_confident: bool = False
+
+
+@dataclass
+class SituationSelfSummary:
+    label: str
+    play_count: int
+    run_pct: float
+    pass_pct: float
+    top_plays: list[PlayProbability] = field(default_factory=list)
+    confident: bool = False
+
+
+# =============================================================================
+# CONSTANTS & PRIVATE HELPERS
+# =============================================================================
 
 _RUN_TOKENS = {"run", "rush", "r"}
 _PASS_TOKENS = {"pass", "throw", "p", "pa", "ps"}
 
 
-def _normalize_play_type(value):
+def _normalize_play_type(value) -> str:
     if pd.isna(value):
         return value
     text = str(value).strip().lower()
@@ -108,40 +207,6 @@ def _filter_out_penalties(df: pd.DataFrame) -> pd.DataFrame:
         return df
     res_lower = df[config.COL_RESULT].astype(str).str.lower()
     return df[~res_lower.str.contains("penalty", na=False)].copy()
-
-
-def add_situational_columns(df: pd.DataFrame) -> pd.DataFrame:
-    if df.empty:
-        return df
-
-    df = df.copy()
-
-    if config.COL_PLAY_TYPE in df.columns:
-        df[config.COL_PLAY_TYPE] = df[config.COL_PLAY_TYPE].map(_normalize_play_type)
-
-    if config.COL_GAIN_LOSS in df.columns:
-        df[config.COL_GAIN_LOSS] = pd.to_numeric(df[config.COL_GAIN_LOSS], errors="coerce")
-
-    if config.COL_DISTANCE in df.columns:
-        df[config.COL_DISTANCE] = pd.to_numeric(df[config.COL_DISTANCE], errors="coerce")
-
-    if config.COL_DOWN in df.columns:
-        df[config.COL_DOWN] = pd.to_numeric(df[config.COL_DOWN], errors="coerce")
-
-    if config.COL_DISTANCE in df.columns:
-        df["DIST_BUCKET"] = df[config.COL_DISTANCE].apply(_distance_bucket)
-
-    if config.COL_DOWN in df.columns and "DIST_BUCKET" in df.columns:
-        df["DOWN_DISTANCE_LABEL"] = df.apply(
-            lambda row: _down_distance_label(row[config.COL_DOWN], row["DIST_BUCKET"]),
-            axis=1,
-        )
-
-    if config.COL_FIELD_POSITION in df.columns:
-        df[config.COL_FIELD_POSITION] = pd.to_numeric(df[config.COL_FIELD_POSITION], errors="coerce")
-        df["FIELD_ZONE"] = df[config.COL_FIELD_POSITION].apply(_field_zone)
-
-    return df
 
 
 def _distance_bucket(distance: Optional[float]) -> str:
@@ -176,16 +241,7 @@ def _field_zone(position: Optional[float]) -> str:
     return "Unknown"
 
 
-def has_field_position_data(df: pd.DataFrame) -> bool:
-    clean_df = _filter_out_penalties(df)
-    return (
-        not clean_df.empty
-        and config.COL_FIELD_POSITION in clean_df.columns
-        and clean_df[config.COL_FIELD_POSITION].notna().any()
-    )
-
-
-def _run_pass_split(df: pd.DataFrame) -> tuple:
+def _run_pass_split(df: pd.DataFrame) -> tuple[float, float]:
     clean_df = _filter_out_penalties(df)
     if clean_df.empty or config.COL_PLAY_TYPE not in clean_df.columns:
         return 0.0, 0.0
@@ -199,164 +255,7 @@ def _run_pass_split(df: pd.DataFrame) -> tuple:
     return run_pct, pass_pct
 
 
-def build_play_type_yards(df: pd.DataFrame) -> PlayTypeYards:
-    clean_df = _filter_out_penalties(df)
-    required = {config.COL_PLAY_TYPE, config.COL_GAIN_LOSS}
-    if clean_df.empty or not required.issubset(clean_df.columns):
-        return PlayTypeYards(0.0, 0.0)
-
-    work = clean_df.copy()
-    work["_res"] = work[config.COL_RESULT].map(_normalize_result)
-    work["_yards"] = pd.to_numeric(work[config.COL_GAIN_LOSS], errors="coerce").fillna(0)
-    
-    # Zero out fumble yards
-    work.loc[work["_res"] == _normalize_result(config.RESULT_FUMBLE), "_yards"] = 0.0
-
-    rushing_yards = float(work.loc[work[config.COL_PLAY_TYPE] == config.PLAY_TYPE_RUN, "_yards"].sum())
-    passing_yards = float(work.loc[work[config.COL_PLAY_TYPE] == config.PLAY_TYPE_PASS, "_yards"].sum())
-    return PlayTypeYards(rushing_yards, passing_yards)
-
-
-def build_ball_carrier_stats(df: pd.DataFrame) -> List[BallCarrierStats]:
-    clean_df = _filter_out_penalties(df)
-    required = {
-        config.COL_BALL_CARRIER,
-        config.COL_PLAY_TYPE,
-        config.COL_RESULT,
-        config.COL_GAIN_LOSS,
-    }
-    if clean_df.empty or not required.issubset(clean_df.columns):
-        return []
-
-    work = clean_df.loc[:, [
-        config.COL_BALL_CARRIER,
-        config.COL_PLAY_TYPE,
-        config.COL_RESULT,
-        config.COL_GAIN_LOSS,
-    ]].copy()
-    work[config.COL_BALL_CARRIER] = work[config.COL_BALL_CARRIER].fillna("").astype(str).str.strip()
-    work = work[work[config.COL_BALL_CARRIER] != ""]
-    if work.empty:
-        return []
-
-    work["_result"] = work[config.COL_RESULT].map(_normalize_result)
-    work["_yards"] = pd.to_numeric(work[config.COL_GAIN_LOSS], errors="coerce").fillna(0)
-
-    rush_result = _normalize_result(config.RESULT_RUSH)
-    rush_td_result = _normalize_result(config.RESULT_RUSH_TD)
-    complete_result = _normalize_result(config.RESULT_COMPLETE)
-    complete_td_result = _normalize_result(config.RESULT_COMPLETE_TD)
-    fumble_result = _normalize_result(config.RESULT_FUMBLE)
-
-    players = []
-    for ball_carrier, group in work.groupby(config.COL_BALL_CARRIER, sort=True):
-        is_run = group[config.COL_PLAY_TYPE] == config.PLAY_TYPE_RUN
-        is_pass = group[config.COL_PLAY_TYPE] == config.PLAY_TYPE_PASS
-
-        # Carries count Rush, Rush TD, and Fumble on run plays
-        rush_mask = is_run & group["_result"].isin({rush_result, rush_td_result, fumble_result})
-        carries = int(rush_mask.sum())
-        
-        # Zero yardage contribution on fumbles
-        rush_yards_mask = is_run & group["_result"].isin({rush_result, rush_td_result})
-        rush_yards = float(group.loc[rush_yards_mask, "_yards"].sum())
-        rush_td = int((is_run & (group["_result"] == rush_td_result)).sum())
-
-        rec_mask = is_pass & group["_result"].isin({complete_result, complete_td_result})
-        receptions = int(rec_mask.sum())
-        rec_yards = float(group.loc[rec_mask, "_yards"].sum())
-        rec_td = int((is_pass & (group["_result"] == complete_td_result)).sum())
-
-        fumbles = int((group["_result"] == fumble_result).sum())
-
-        players.append(BallCarrierStats(
-            ball_carrier=ball_carrier,
-            carries=carries,
-            rush_yards=rush_yards,
-            yards_per_carry=round(rush_yards / carries, 1) if carries else 0.0,
-            rush_td=rush_td,
-            receptions=receptions,
-            rec_yards=rec_yards,
-            rec_td=rec_td,
-            fumbles=fumbles,
-        ))
-
-    return sorted(players, key=lambda p: (-(p.rush_yards + p.rec_yards), p.ball_carrier))
-
-
-def build_qb_stats(df: pd.DataFrame) -> QBStats:
-    clean_df = _filter_out_penalties(df)
-    required = {config.COL_PLAY_TYPE, config.COL_RESULT, config.COL_GAIN_LOSS}
-    if clean_df.empty or not required.issubset(clean_df.columns):
-        return QBStats(0, 0, 0.0, 0.0, 0, 0)
-
-    pass_df = clean_df[clean_df[config.COL_PLAY_TYPE] == config.PLAY_TYPE_PASS]
-    if pass_df.empty:
-        return QBStats(0, 0, 0.0, 0.0, 0, 0)
-
-    result = pass_df[config.COL_RESULT].map(_normalize_result)
-    yards = pd.to_numeric(pass_df[config.COL_GAIN_LOSS], errors="coerce").fillna(0)
-
-    complete_result = _normalize_result(config.RESULT_COMPLETE)
-    complete_td_result = _normalize_result(config.RESULT_COMPLETE_TD)
-    incomplete_result = _normalize_result(config.RESULT_INCOMPLETE)
-    interception_result = _normalize_result(config.RESULT_INTERCEPTION)
-    fumble_result = _normalize_result(config.RESULT_FUMBLE)
-
-    # Attempts include Completions, Incompletions, Interceptions, and Fumbles on pass plays
-    attempt_values = {complete_result, complete_td_result, incomplete_result, interception_result, fumble_result}
-    is_attempt = result.isin(attempt_values)
-    attempts = int(is_attempt.sum())
-
-    is_complete = result.isin({complete_result, complete_td_result})
-    completions = int(is_complete.sum())
-    pass_yards = float(yards[is_complete].sum())
-    pass_td = int((result == complete_td_result).sum())
-    interceptions = int((result == interception_result).sum())
-
-    comp_pct = round(completions / attempts * 100, 1) if attempts else 0.0
-
-    return QBStats(
-        attempts=attempts,
-        completions=completions,
-        comp_pct=comp_pct,
-        pass_yards=pass_yards,
-        pass_td=pass_td,
-        interceptions=interceptions,
-    )
-
-
-def build_penalty_stats(odk_df: pd.DataFrame) -> PenaltyStats:
-    """Calculates penalty counts and net yardages for Offense and Defense."""
-    if odk_df.empty or config.COL_RESULT not in odk_df.columns or config.COL_SIDE not in odk_df.columns:
-        return PenaltyStats(0, 0.0, 0, 0.0)
-
-    work = odk_df.copy()
-    work["_res"] = work[config.COL_RESULT].astype(str).str.lower()
-    pen_df = work[work["_res"].str.contains("penalty", na=False)]
-
-    if pen_df.empty:
-        return PenaltyStats(0, 0.0, 0, 0.0)
-
-    yards = pd.to_numeric(pen_df[config.COL_GAIN_LOSS], errors="coerce").fillna(0)
-    
-    off_mask = pen_df[config.COL_SIDE] == config.SIDE_OFFENSE
-    def_mask = pen_df[config.COL_SIDE] == config.SIDE_DEFENSE
-
-    off_count = int(off_mask.sum())
-    off_yards = float(yards[off_mask].sum())
-    def_count = int(def_mask.sum())
-    def_yards = float(yards[def_mask].sum())
-
-    return PenaltyStats(
-        offense_count=off_count,
-        offense_yards=off_yards,
-        defense_count=def_count,
-        defense_yards=def_yards,
-    )
-
-
-def _top_play_calls(df: pd.DataFrame, play_type: str, top_n: int) -> List[str]:
+def _top_play_calls(df: pd.DataFrame, play_type: str, top_n: int) -> list[str]:
     clean_df = _filter_out_penalties(df)
     if clean_df.empty or config.COL_PLAY_CALL not in clean_df.columns or config.COL_PLAY_TYPE not in clean_df.columns:
         return []
@@ -369,7 +268,7 @@ def _top_play_calls(df: pd.DataFrame, play_type: str, top_n: int) -> List[str]:
     return counts.head(top_n).index.tolist()
 
 
-def _play_call_stats(df: pd.DataFrame, play_type: str) -> List[PlayCallStat]:
+def _play_call_stats(df: pd.DataFrame, play_type: str) -> list[PlayCallStat]:
     clean_df = _filter_out_penalties(df)
     if clean_df.empty or config.COL_PLAY_CALL not in clean_df.columns or config.COL_PLAY_TYPE not in clean_df.columns:
         return []
@@ -385,7 +284,6 @@ def _play_call_stats(df: pd.DataFrame, play_type: str) -> List[PlayCallStat]:
 
     stats = []
     for play_name, group in subset.groupby(config.COL_PLAY_CALL):
-        # Zero out fumble yardages for average and explosive math
         group_yards = pd.to_numeric(group[config.COL_GAIN_LOSS], errors="coerce").fillna(0).copy()
         is_fumble = group[config.COL_RESULT].map(_normalize_result) == _normalize_result(config.RESULT_FUMBLE)
         group_yards[is_fumble] = 0.0
@@ -394,7 +292,7 @@ def _play_call_stats(df: pd.DataFrame, play_type: str) -> List[PlayCallStat]:
         explosive_count = int((group_yards >= threshold).sum())
 
         stats.append(PlayCallStat(
-            play_name=play_name,
+            play_name=str(play_name),
             calls=len(group),
             avg_gain=avg_gain,
             explosive_count=explosive_count,
@@ -403,7 +301,7 @@ def _play_call_stats(df: pd.DataFrame, play_type: str) -> List[PlayCallStat]:
     return sorted(stats, key=lambda s: s.calls, reverse=True)
 
 
-def _play_probabilities(df: pd.DataFrame, play_type: Optional[str], top_n: int) -> List[PlayProbability]:
+def _play_probabilities(df: pd.DataFrame, play_type: Optional[str], top_n: int) -> list[PlayProbability]:
     clean_df = _filter_out_penalties(df)
     if clean_df.empty or config.COL_PLAY_CALL not in clean_df.columns:
         return []
@@ -421,7 +319,7 @@ def _play_probabilities(df: pd.DataFrame, play_type: Optional[str], top_n: int) 
     counts = subset[config.COL_PLAY_CALL].value_counts()
     return [
         PlayProbability(
-            play_name=name,
+            play_name=str(name),
             pct=round(count / total * 100, 1),
             count=int(count),
         )
@@ -429,227 +327,14 @@ def _play_probabilities(df: pd.DataFrame, play_type: Optional[str], top_n: int) 
     ]
 
 
-def is_confident(play_count: int) -> bool:
-    return play_count >= config.MIN_CONFIDENCE_SAMPLE
+def _dominant(run_pct: float, pass_pct: float) -> tuple[str, float]:
+    if pass_pct >= run_pct:
+        return "Pass", pass_pct
+    return "Run", run_pct
 
 
-def build_summary(df: pd.DataFrame) -> Summary:
-    clean_df = _filter_out_penalties(df)
-    if clean_df.empty:
-        return Summary(0, 0.0, 0.0, 0, 0)
-
-    total_plays = len(clean_df)
-    run_pct, pass_pct = _run_pass_split(clean_df)
-
-    explosive_run_count = 0
-    explosive_pass_count = 0
-    if config.COL_GAIN_LOSS in clean_df.columns and config.COL_PLAY_TYPE in clean_df.columns:
-        work = clean_df.copy()
-        work["_res"] = work[config.COL_RESULT].map(_normalize_result)
-        work["_yards"] = pd.to_numeric(work[config.COL_GAIN_LOSS], errors="coerce").fillna(0)
-        work.loc[work["_res"] == _normalize_result(config.RESULT_FUMBLE), "_yards"] = 0.0
-
-        runs = work[work[config.COL_PLAY_TYPE] == config.PLAY_TYPE_RUN]
-        passes = work[work[config.COL_PLAY_TYPE] == config.PLAY_TYPE_PASS]
-        explosive_run_count = int((runs["_yards"] >= config.EXPLOSIVE_RUN_THRESHOLD).sum())
-        explosive_pass_count = int((passes["_yards"] >= config.EXPLOSIVE_PASS_THRESHOLD).sum())
-
-    return Summary(
-        total_plays=total_plays,
-        run_pct=run_pct,
-        pass_pct=pass_pct,
-        explosive_run_count=explosive_run_count,
-        explosive_pass_count=explosive_pass_count,
-    )
-
-
-def build_top_formations(df: pd.DataFrame, top_n: int = config.TOP_N_FORMATIONS) -> List[FormationSummary]:
-    clean_df = _filter_out_penalties(df)
-    if clean_df.empty or config.COL_FORMATION not in clean_df.columns:
-        return []
-
-    total_plays = len(clean_df)
-    usage_counts = clean_df[config.COL_FORMATION].value_counts()
-
-    summaries = []
-    for formation, count in usage_counts.head(top_n).items():
-        formation_df = clean_df[clean_df[config.COL_FORMATION] == formation]
-        run_pct, pass_pct = _run_pass_split(formation_df)
-        summaries.append(FormationSummary(
-            formation=formation,
-            usage_pct=round(count / total_plays * 100, 1),
-            run_pct=run_pct,
-            pass_pct=pass_pct,
-            top_run_plays=_top_play_calls(formation_df, config.PLAY_TYPE_RUN, config.TOP_N_PLAYS),
-            top_pass_plays=_top_play_calls(formation_df, config.PLAY_TYPE_PASS, config.TOP_N_PLAYS),
-        ))
-
-    return summaries
-
-
-def build_top_plays(df: pd.DataFrame, play_type: str, top_n: int = config.TOP_N_PLAYS) -> List[PlayCallStat]:
-    return _play_call_stats(df, play_type)[:top_n]
-
-
-def build_explosive_report(df: pd.DataFrame, top_n: int = config.TOP_N_PLAYS) -> dict:
-    clean_df = _filter_out_penalties(df)
-    if clean_df.empty:
-        return {"runs": [], "passes": []}
-
-    run_stats = _play_call_stats(clean_df, config.PLAY_TYPE_RUN)
-    pass_stats = _play_call_stats(clean_df, config.PLAY_TYPE_PASS)
-
-    top_runs = sorted(run_stats, key=lambda s: s.explosive_count, reverse=True)[:top_n]
-    top_passes = sorted(pass_stats, key=lambda s: s.explosive_count, reverse=True)[:top_n]
-
-    top_runs = [s for s in top_runs if s.explosive_count > 0]
-    top_passes = [s for s in top_passes if s.explosive_count > 0]
-
-    return {"runs": top_runs, "passes": top_passes}
-
-
-@dataclass
-class IdentityComparison:
-    scout_plays: int
-    live_plays: int
-    scout_run_pct: float
-    scout_pass_pct: float
-    live_run_pct: float
-    live_pass_pct: float
-    run_pct_change: float
-    pass_pct_change: float
-    scout_explosive_run: int
-    scout_explosive_pass: int
-    live_explosive_run: int
-    live_explosive_pass: int
-
-
-def build_identity_comparison(scout: Summary, live: Summary) -> IdentityComparison:
-    return IdentityComparison(
-        scout_plays=scout.total_plays,
-        live_plays=live.total_plays,
-        scout_run_pct=scout.run_pct,
-        scout_pass_pct=scout.pass_pct,
-        live_run_pct=live.run_pct,
-        live_pass_pct=live.pass_pct,
-        run_pct_change=round(live.run_pct - scout.run_pct, 1),
-        pass_pct_change=round(live.pass_pct - scout.pass_pct, 1),
-        scout_explosive_run=scout.explosive_run_count,
-        scout_explosive_pass=scout.explosive_pass_count,
-        live_explosive_run=live.explosive_run_count,
-        live_explosive_pass=live.explosive_pass_count,
-    )
-
-
-@dataclass
-class FormationChange:
-    formation: str
-    scout_pct: float
-    live_pct: float
-    change: float
-    is_new: bool
-
-
-@dataclass
-class PlayChange:
-    play_name: str
-    scout_pct: float
-    live_pct: float
-    scout_count: int
-    live_count: int
-    change: float
-    is_new: bool
-
-
-def compare_formations(scout_df: pd.DataFrame, live_df: pd.DataFrame) -> List[FormationChange]:
-    c_scout = _filter_out_penalties(scout_df)
-    c_live = _filter_out_penalties(live_df)
-
-    if config.COL_FORMATION not in c_scout.columns and config.COL_FORMATION not in c_live.columns:
-        return []
-
-    scout_total = len(c_scout)
-    live_total = len(c_live)
-    scout_counts = c_scout[config.COL_FORMATION].value_counts() if scout_total else pd.Series(dtype=int)
-    live_counts = c_live[config.COL_FORMATION].value_counts() if live_total else pd.Series(dtype=int)
-
-    all_formations = sorted(set(scout_counts.index) | set(live_counts.index))
-    changes = []
-    for formation in all_formations:
-        scout_count = int(scout_counts.get(formation, 0))
-        live_count = int(live_counts.get(formation, 0))
-        scout_pct = round(scout_count / scout_total * 100, 1) if scout_total else 0.0
-        live_pct = round(live_count / live_total * 100, 1) if live_total else 0.0
-
-        changes.append(FormationChange(
-            formation=formation,
-            scout_pct=scout_pct,
-            live_pct=live_pct,
-            change=round(live_pct - scout_pct, 1),
-            is_new=(scout_count == 0 and live_count > 0),
-        ))
-
-    return sorted(changes, key=lambda c: abs(c.change), reverse=True)
-
-
-def compare_plays(scout_df: pd.DataFrame, live_df: pd.DataFrame, play_type: str) -> List[PlayChange]:
-    c_scout = _filter_out_penalties(scout_df)
-    c_live = _filter_out_penalties(live_df)
-
-    scout_subset = c_scout[c_scout.get(config.COL_PLAY_TYPE) == play_type] if not c_scout.empty else c_scout
-    live_subset = c_live[c_live.get(config.COL_PLAY_TYPE) == play_type] if not c_live.empty else c_live
-
-    scout_total = len(scout_subset)
-    live_total = len(live_subset)
-
-    if config.COL_PLAY_CALL not in c_scout.columns and config.COL_PLAY_CALL not in c_live.columns:
-        return []
-
-    scout_counts = scout_subset[config.COL_PLAY_CALL].value_counts() if scout_total else pd.Series(dtype=int)
-    live_counts = live_subset[config.COL_PLAY_CALL].value_counts() if live_total else pd.Series(dtype=int)
-
-    all_plays = sorted(set(scout_counts.index) | set(live_counts.index))
-    changes = []
-    for play_name in all_plays:
-        scout_count = int(scout_counts.get(play_name, 0))
-        live_count = int(live_counts.get(play_name, 0))
-        scout_pct = round(scout_count / scout_total * 100, 1) if scout_total else 0.0
-        live_pct = round(live_count / live_total * 100, 1) if live_total else 0.0
-
-        changes.append(PlayChange(
-            play_name=play_name,
-            scout_pct=scout_pct,
-            live_pct=live_pct,
-            scout_count=scout_count,
-            live_count=live_count,
-            change=round(live_pct - scout_pct, 1),
-            is_new=(scout_count == 0 and live_count > 0),
-        ))
-
-    return sorted(changes, key=lambda c: abs(c.change), reverse=True)
-
-
-@dataclass
-class FormationComparison:
-    formation: str
-    scout_pct: float
-    live_pct: float
-    change: float
-    is_new: bool
-    scout_count: int
-    live_count: int
-    scout_run_pct: float
-    scout_pass_pct: float
-    live_run_pct: float
-    live_pass_pct: float
-    pass_pct_change: float
-    scout_top_runs: List[str]
-    scout_top_passes: List[str]
-    live_top_runs: List[str]
-    live_top_passes: List[str]
-    new_plays: List[str]
-    status: str
-    confident: bool
+def _play_type_of(dominant_type: str) -> str:
+    return config.PLAY_TYPE_PASS if dominant_type == "Pass" else config.PLAY_TYPE_RUN
 
 
 def _formation_status(scout_count: int, live_count: int, change: float, is_new: bool) -> str:
@@ -666,105 +351,10 @@ def _formation_status(scout_count: int, live_count: int, change: float, is_new: 
     return config.STATUS_SAME
 
 
-def build_formation_comparisons(
-    scout_df: pd.DataFrame,
-    live_df: pd.DataFrame,
-    top_n: int = config.TOP_N_FORMATIONS,
-) -> List[FormationComparison]:
-    c_scout = _filter_out_penalties(scout_df)
-    c_live = _filter_out_penalties(live_df)
-
-    have_scout = config.COL_FORMATION in c_scout.columns and not c_scout.empty
-    have_live = config.COL_FORMATION in c_live.columns and not c_live.empty
-    if not have_scout and not have_live:
-        return []
-
-    scout_total = len(c_scout)
-    live_total = len(c_live)
-    scout_counts = c_scout[config.COL_FORMATION].value_counts() if have_scout else pd.Series(dtype=int)
-    live_counts = c_live[config.COL_FORMATION].value_counts() if have_live else pd.Series(dtype=int)
-
-    comparisons = []
-    for formation in set(scout_counts.index) | set(live_counts.index):
-        scout_count = int(scout_counts.get(formation, 0))
-        live_count = int(live_counts.get(formation, 0))
-        scout_pct = round(scout_count / scout_total * 100, 1) if scout_total else 0.0
-        live_pct = round(live_count / live_total * 100, 1) if live_total else 0.0
-
-        scout_subset = c_scout[c_scout[config.COL_FORMATION] == formation] if have_scout else pd.DataFrame()
-        live_subset = c_live[c_live[config.COL_FORMATION] == formation] if have_live else pd.DataFrame()
-
-        scout_run_pct, scout_pass_pct = _run_pass_split(scout_subset)
-        live_run_pct, live_pass_pct = _run_pass_split(live_subset)
-
-        scout_plays = set(scout_subset[config.COL_PLAY_CALL]) if config.COL_PLAY_CALL in scout_subset.columns else set()
-        live_plays = set(live_subset[config.COL_PLAY_CALL]) if config.COL_PLAY_CALL in live_subset.columns else set()
-
-        change = round(live_pct - scout_pct, 1)
-        is_new = scout_count == 0 and live_count > 0
-
-        comparisons.append(FormationComparison(
-            formation=formation,
-            scout_pct=scout_pct,
-            live_pct=live_pct,
-            change=change,
-            is_new=is_new,
-            scout_count=scout_count,
-            live_count=live_count,
-            scout_run_pct=scout_run_pct,
-            scout_pass_pct=scout_pass_pct,
-            live_run_pct=live_run_pct,
-            live_pass_pct=live_pass_pct,
-            pass_pct_change=round(live_pass_pct - scout_pass_pct, 1),
-            scout_top_runs=_top_play_calls(scout_subset, config.PLAY_TYPE_RUN, config.TOP_N_PLAYS),
-            scout_top_passes=_top_play_calls(scout_subset, config.PLAY_TYPE_PASS, config.TOP_N_PLAYS),
-            live_top_runs=_top_play_calls(live_subset, config.PLAY_TYPE_RUN, config.TOP_N_PLAYS),
-            live_top_passes=_top_play_calls(live_subset, config.PLAY_TYPE_PASS, config.TOP_N_PLAYS),
-            new_plays=sorted(live_plays - scout_plays),
-            status=_formation_status(scout_count, live_count, change, is_new),
-            confident=is_confident(live_count),
-        ))
-
-    comparisons.sort(key=lambda c: max(c.scout_pct, c.live_pct), reverse=True)
-    return comparisons[:top_n]
-
-
-@dataclass
-class SituationExpectation:
-    label: str
-    scout_run_pct: float
-    scout_pass_pct: float
-    live_run_pct: float
-    live_pass_pct: float
-    scout_dominant_type: str
-    scout_dominant_pct: float
-    live_dominant_type: str
-    live_dominant_pct: float
-    scout_expected_plays: List[PlayProbability]
-    live_top_plays: List[PlayProbability]
-    scout_count: int
-    live_count: int
-    pass_pct_change: float
-    verdict: str
-    changed: bool
-    scout_confident: bool
-    live_confident: bool
-
-
-def _dominant(run_pct: float, pass_pct: float) -> tuple:
-    if pass_pct >= run_pct:
-        return "Pass", pass_pct
-    return "Run", run_pct
-
-
-def _play_type_of(dominant_type: str) -> str:
-    return config.PLAY_TYPE_PASS if dominant_type == "Pass" else config.PLAY_TYPE_RUN
-
-
 def _situation_verdict(
     scout_dom: str, live_dom: str, pass_change: float,
     live_confident: bool, live_count: int,
-) -> tuple:
+) -> tuple[str, bool]:
     if live_count == 0:
         return "Not seen live yet", False
     if not live_confident:
@@ -820,8 +410,8 @@ def _situation_expectation(label: str, scout_subset: pd.DataFrame, live_subset: 
 
 def _build_situation_expectations(
     scout_df: pd.DataFrame, live_df: pd.DataFrame,
-    label_col: str, ordered_labels: List[str],
-) -> List[SituationExpectation]:
+    label_col: str, ordered_labels: list[str],
+) -> list[SituationExpectation]:
     c_scout = _filter_out_penalties(scout_df)
     c_live = _filter_out_penalties(live_df)
     results = []
@@ -834,7 +424,7 @@ def _build_situation_expectations(
     return results
 
 
-def _down_distance_labels() -> List[str]:
+def _down_distance_labels() -> list[str]:
     return [
         "1st & Long",
         "2nd & Long",
@@ -846,7 +436,445 @@ def _down_distance_labels() -> List[str]:
     ]
 
 
-def build_down_distance_expectations(scout_df: pd.DataFrame, live_df: pd.DataFrame) -> List[SituationExpectation]:
+def _self_situation_summary(label: str, df: pd.DataFrame) -> SituationSelfSummary:
+    clean_df = _filter_out_penalties(df)
+    run_pct, pass_pct = _run_pass_split(clean_df)
+    dom, _dom_pct = _dominant(run_pct, pass_pct)
+    return SituationSelfSummary(
+        label=label,
+        play_count=len(clean_df),
+        run_pct=run_pct,
+        pass_pct=pass_pct,
+        top_plays=_play_probabilities(clean_df, _play_type_of(dom), config.EXPECTED_CALL_TOP_N),
+        confident=is_confident(len(clean_df)),
+    )
+
+
+# =============================================================================
+# PUBLIC API / CALCULATION FUNCTIONS
+# =============================================================================
+
+def is_confident(play_count: int) -> bool:
+    return play_count >= config.MIN_CONFIDENCE_SAMPLE
+
+
+def add_situational_columns(df: pd.DataFrame) -> pd.DataFrame:
+    """Enriches DataFrame with normalized attributes and situational metrics."""
+    if df.empty:
+        return df
+
+    df = df.copy()
+
+    if config.COL_PLAY_TYPE in df.columns:
+        df[config.COL_PLAY_TYPE] = df[config.COL_PLAY_TYPE].map(_normalize_play_type)
+
+    if config.COL_GAIN_LOSS in df.columns:
+        df[config.COL_GAIN_LOSS] = pd.to_numeric(df[config.COL_GAIN_LOSS], errors="coerce")
+
+    if config.COL_DISTANCE in df.columns:
+        df[config.COL_DISTANCE] = pd.to_numeric(df[config.COL_DISTANCE], errors="coerce")
+        df["DIST_BUCKET"] = df[config.COL_DISTANCE].map(_distance_bucket)
+
+    if config.COL_DOWN in df.columns:
+        df[config.COL_DOWN] = pd.to_numeric(df[config.COL_DOWN], errors="coerce")
+
+    if config.COL_DOWN in df.columns and "DIST_BUCKET" in df.columns:
+        # Vectorized lookup performance over row-wise apply
+        downs = df[config.COL_DOWN].fillna(-1).astype(int).map(config.DOWN_ORDINALS)
+        df["DOWN_DISTANCE_LABEL"] = downs.combine(
+            df["DIST_BUCKET"], 
+            lambda d, b: f"{d} & {b}" if pd.notna(d) else "Other"
+        )
+
+    if config.COL_FIELD_POSITION in df.columns:
+        df[config.COL_FIELD_POSITION] = pd.to_numeric(df[config.COL_FIELD_POSITION], errors="coerce")
+        df["FIELD_ZONE"] = df[config.COL_FIELD_POSITION].map(_field_zone)
+
+    return df
+
+
+def has_field_position_data(df: pd.DataFrame) -> bool:
+    clean_df = _filter_out_penalties(df)
+    return (
+        not clean_df.empty
+        and config.COL_FIELD_POSITION in clean_df.columns
+        and clean_df[config.COL_FIELD_POSITION].notna().any()
+    )
+
+
+def build_play_type_yards(df: pd.DataFrame) -> PlayTypeYards:
+    clean_df = _filter_out_penalties(df)
+    required = {config.COL_PLAY_TYPE, config.COL_GAIN_LOSS}
+    if clean_df.empty or not required.issubset(clean_df.columns):
+        return PlayTypeYards(0.0, 0.0)
+
+    work = clean_df.copy()
+    work["_res"] = work[config.COL_RESULT].map(_normalize_result)
+    work["_yards"] = pd.to_numeric(work[config.COL_GAIN_LOSS], errors="coerce").fillna(0)
+    
+    # Zero out fumble yards
+    work.loc[work["_res"] == _normalize_result(config.RESULT_FUMBLE), "_yards"] = 0.0
+
+    rushing_yards = float(work.loc[work[config.COL_PLAY_TYPE] == config.PLAY_TYPE_RUN, "_yards"].sum())
+    passing_yards = float(work.loc[work[config.COL_PLAY_TYPE] == config.PLAY_TYPE_PASS, "_yards"].sum())
+    return PlayTypeYards(rushing_yards, passing_yards)
+
+
+def build_ball_carrier_stats(df: pd.DataFrame) -> list[BallCarrierStats]:
+    clean_df = _filter_out_penalties(df)
+    required = {
+        config.COL_BALL_CARRIER,
+        config.COL_PLAY_TYPE,
+        config.COL_RESULT,
+        config.COL_GAIN_LOSS,
+    }
+    if clean_df.empty or not required.issubset(clean_df.columns):
+        return []
+
+    work = clean_df.loc[:, [
+        config.COL_BALL_CARRIER,
+        config.COL_PLAY_TYPE,
+        config.COL_RESULT,
+        config.COL_GAIN_LOSS,
+    ]].copy()
+    work[config.COL_BALL_CARRIER] = work[config.COL_BALL_CARRIER].fillna("").astype(str).str.strip()
+    work = work[work[config.COL_BALL_CARRIER] != ""]
+    if work.empty:
+        return []
+
+    work["_result"] = work[config.COL_RESULT].map(_normalize_result)
+    work["_yards"] = pd.to_numeric(work[config.COL_GAIN_LOSS], errors="coerce").fillna(0)
+
+    rush_result = _normalize_result(config.RESULT_RUSH)
+    rush_td_result = _normalize_result(config.RESULT_RUSH_TD)
+    complete_result = _normalize_result(config.RESULT_COMPLETE)
+    complete_td_result = _normalize_result(config.RESULT_COMPLETE_TD)
+    fumble_result = _normalize_result(config.RESULT_FUMBLE)
+
+    players = []
+    for ball_carrier, group in work.groupby(config.COL_BALL_CARRIER, sort=True):
+        is_run = group[config.COL_PLAY_TYPE] == config.PLAY_TYPE_RUN
+        is_pass = group[config.COL_PLAY_TYPE] == config.PLAY_TYPE_PASS
+
+        rush_mask = is_run & group["_result"].isin({rush_result, rush_td_result, fumble_result})
+        carries = int(rush_mask.sum())
+        
+        rush_yards_mask = is_run & group["_result"].isin({rush_result, rush_td_result})
+        rush_yards = float(group.loc[rush_yards_mask, "_yards"].sum())
+        rush_td = int((is_run & (group["_result"] == rush_td_result)).sum())
+
+        rec_mask = is_pass & group["_result"].isin({complete_result, complete_td_result})
+        receptions = int(rec_mask.sum())
+        rec_yards = float(group.loc[rec_mask, "_yards"].sum())
+        rec_td = int((is_pass & (group["_result"] == complete_td_result)).sum())
+
+        fumbles = int((group["_result"] == fumble_result).sum())
+
+        players.append(BallCarrierStats(
+            ball_carrier=str(ball_carrier),
+            carries=carries,
+            rush_yards=rush_yards,
+            yards_per_carry=round(rush_yards / carries, 1) if carries else 0.0,
+            rush_td=rush_td,
+            receptions=receptions,
+            rec_yards=rec_yards,
+            rec_td=rec_td,
+            fumbles=fumbles,
+        ))
+
+    return sorted(players, key=lambda p: (-(p.rush_yards + p.rec_yards), p.ball_carrier))
+
+
+def build_qb_stats(df: pd.DataFrame) -> QBStats:
+    clean_df = _filter_out_penalties(df)
+    required = {config.COL_PLAY_TYPE, config.COL_RESULT, config.COL_GAIN_LOSS}
+    if clean_df.empty or not required.issubset(clean_df.columns):
+        return QBStats(0, 0, 0.0, 0.0, 0, 0)
+
+    pass_df = clean_df[clean_df[config.COL_PLAY_TYPE] == config.PLAY_TYPE_PASS]
+    if pass_df.empty:
+        return QBStats(0, 0, 0.0, 0.0, 0, 0)
+
+    result = pass_df[config.COL_RESULT].map(_normalize_result)
+    yards = pd.to_numeric(pass_df[config.COL_GAIN_LOSS], errors="coerce").fillna(0)
+
+    complete_result = _normalize_result(config.RESULT_COMPLETE)
+    complete_td_result = _normalize_result(config.RESULT_COMPLETE_TD)
+    incomplete_result = _normalize_result(config.RESULT_INCOMPLETE)
+    interception_result = _normalize_result(config.RESULT_INTERCEPTION)
+    fumble_result = _normalize_result(config.RESULT_FUMBLE)
+
+    attempt_values = {complete_result, complete_td_result, incomplete_result, interception_result, fumble_result}
+    is_attempt = result.isin(attempt_values)
+    attempts = int(is_attempt.sum())
+
+    is_complete = result.isin({complete_result, complete_td_result})
+    completions = int(is_complete.sum())
+    pass_yards = float(yards[is_complete].sum())
+    pass_td = int((result == complete_td_result).sum())
+    interceptions = int((result == interception_result).sum())
+
+    comp_pct = round(completions / attempts * 100, 1) if attempts else 0.0
+
+    return QBStats(
+        attempts=attempts,
+        completions=completions,
+        comp_pct=comp_pct,
+        pass_yards=pass_yards,
+        pass_td=pass_td,
+        interceptions=interceptions,
+    )
+
+
+def build_penalty_stats(odk_df: pd.DataFrame) -> PenaltyStats:
+    """Calculates penalty counts and net yardages for Offense and Defense."""
+    if odk_df.empty or config.COL_RESULT not in odk_df.columns or config.COL_SIDE not in odk_df.columns:
+        return PenaltyStats(0, 0.0, 0, 0.0)
+
+    work = odk_df.copy()
+    work["_res"] = work[config.COL_RESULT].astype(str).str.lower()
+    pen_df = work[work["_res"].str.contains("penalty", na=False)]
+
+    if pen_df.empty:
+        return PenaltyStats(0, 0.0, 0, 0.0)
+
+    yards = pd.to_numeric(pen_df[config.COL_GAIN_LOSS], errors="coerce").fillna(0)
+    
+    off_mask = pen_df[config.COL_SIDE] == config.SIDE_OFFENSE
+    def_mask = pen_df[config.COL_SIDE] == config.SIDE_DEFENSE
+
+    return PenaltyStats(
+        offense_count=int(off_mask.sum()),
+        offense_yards=float(yards[off_mask].sum()),
+        defense_count=int(def_mask.sum()),
+        defense_yards=float(yards[def_mask].sum()),
+    )
+
+
+def build_summary(df: pd.DataFrame) -> Summary:
+    clean_df = _filter_out_penalties(df)
+    if clean_df.empty:
+        return Summary(0, 0.0, 0.0, 0, 0)
+
+    total_plays = len(clean_df)
+    run_pct, pass_pct = _run_pass_split(clean_df)
+
+    explosive_run_count = 0
+    explosive_pass_count = 0
+    if config.COL_GAIN_LOSS in clean_df.columns and config.COL_PLAY_TYPE in clean_df.columns:
+        work = clean_df.copy()
+        work["_res"] = work[config.COL_RESULT].map(_normalize_result)
+        work["_yards"] = pd.to_numeric(work[config.COL_GAIN_LOSS], errors="coerce").fillna(0)
+        work.loc[work["_res"] == _normalize_result(config.RESULT_FUMBLE), "_yards"] = 0.0
+
+        runs = work[work[config.COL_PLAY_TYPE] == config.PLAY_TYPE_RUN]
+        passes = work[work[config.COL_PLAY_TYPE] == config.PLAY_TYPE_PASS]
+        explosive_run_count = int((runs["_yards"] >= config.EXPLOSIVE_RUN_THRESHOLD).sum())
+        explosive_pass_count = int((passes["_yards"] >= config.EXPLOSIVE_PASS_THRESHOLD).sum())
+
+    return Summary(
+        total_plays=total_plays,
+        run_pct=run_pct,
+        pass_pct=pass_pct,
+        explosive_run_count=explosive_run_count,
+        explosive_pass_count=explosive_pass_count,
+    )
+
+
+def build_top_formations(df: pd.DataFrame, top_n: int = config.TOP_N_FORMATIONS) -> list[FormationSummary]:
+    clean_df = _filter_out_penalties(df)
+    if clean_df.empty or config.COL_FORMATION not in clean_df.columns:
+        return []
+
+    total_plays = len(clean_df)
+    usage_counts = clean_df[config.COL_FORMATION].value_counts()
+
+    summaries = []
+    for formation, count in usage_counts.head(top_n).items():
+        formation_df = clean_df[clean_df[config.COL_FORMATION] == formation]
+        run_pct, pass_pct = _run_pass_split(formation_df)
+        summaries.append(FormationSummary(
+            formation=str(formation),
+            usage_pct=round(count / total_plays * 100, 1),
+            run_pct=run_pct,
+            pass_pct=pass_pct,
+            top_run_plays=_top_play_calls(formation_df, config.PLAY_TYPE_RUN, config.TOP_N_PLAYS),
+            top_pass_plays=_top_play_calls(formation_df, config.PLAY_TYPE_PASS, config.TOP_N_PLAYS),
+        ))
+
+    return summaries
+
+
+def build_top_plays(df: pd.DataFrame, play_type: str, top_n: int = config.TOP_N_PLAYS) -> list[PlayCallStat]:
+    return _play_call_stats(df, play_type)[:top_n]
+
+
+def build_explosive_report(df: pd.DataFrame, top_n: int = config.TOP_N_PLAYS) -> dict[str, list[PlayCallStat]]:
+    clean_df = _filter_out_penalties(df)
+    if clean_df.empty:
+        return {"runs": [], "passes": []}
+
+    run_stats = _play_call_stats(clean_df, config.PLAY_TYPE_RUN)
+    pass_stats = _play_call_stats(clean_df, config.PLAY_TYPE_PASS)
+
+    top_runs = sorted(run_stats, key=lambda s: s.explosive_count, reverse=True)[:top_n]
+    top_passes = sorted(pass_stats, key=lambda s: s.explosive_count, reverse=True)[:top_n]
+
+    return {
+        "runs": [s for s in top_runs if s.explosive_count > 0],
+        "passes": [s for s in top_passes if s.explosive_count > 0],
+    }
+
+
+def build_identity_comparison(scout: Summary, live: Summary) -> IdentityComparison:
+    return IdentityComparison(
+        scout_plays=scout.total_plays,
+        live_plays=live.total_plays,
+        scout_run_pct=scout.run_pct,
+        scout_pass_pct=scout.pass_pct,
+        live_run_pct=live.run_pct,
+        live_pass_pct=live.pass_pct,
+        run_pct_change=round(live.run_pct - scout.run_pct, 1),
+        pass_pct_change=round(live.pass_pct - scout.pass_pct, 1),
+        scout_explosive_run=scout.explosive_run_count,
+        scout_explosive_pass=scout.explosive_pass_count,
+        live_explosive_run=live.explosive_run_count,
+        live_explosive_pass=live.explosive_pass_count,
+    )
+
+
+def compare_formations(scout_df: pd.DataFrame, live_df: pd.DataFrame) -> list[FormationChange]:
+    c_scout = _filter_out_penalties(scout_df)
+    c_live = _filter_out_penalties(live_df)
+
+    if config.COL_FORMATION not in c_scout.columns and config.COL_FORMATION not in c_live.columns:
+        return []
+
+    scout_total = len(c_scout)
+    live_total = len(c_live)
+    scout_counts = c_scout[config.COL_FORMATION].value_counts() if scout_total and config.COL_FORMATION in c_scout.columns else pd.Series(dtype=int)
+    live_counts = c_live[config.COL_FORMATION].value_counts() if live_total and config.COL_FORMATION in c_live.columns else pd.Series(dtype=int)
+
+    all_formations = sorted(set(scout_counts.index) | set(live_counts.index))
+    changes = []
+    for formation in all_formations:
+        scout_count = int(scout_counts.get(formation, 0))
+        live_count = int(live_counts.get(formation, 0))
+        scout_pct = round(scout_count / scout_total * 100, 1) if scout_total else 0.0
+        live_pct = round(live_count / live_total * 100, 1) if live_total else 0.0
+
+        changes.append(FormationChange(
+            formation=str(formation),
+            scout_pct=scout_pct,
+            live_pct=live_pct,
+            change=round(live_pct - scout_pct, 1),
+            is_new=(scout_count == 0 and live_count > 0),
+        ))
+
+    return sorted(changes, key=lambda c: abs(c.change), reverse=True)
+
+
+def compare_plays(scout_df: pd.DataFrame, live_df: pd.DataFrame, play_type: str) -> list[PlayChange]:
+    c_scout = _filter_out_penalties(scout_df)
+    c_live = _filter_out_penalties(live_df)
+
+    scout_subset = c_scout[c_scout.get(config.COL_PLAY_TYPE) == play_type] if not c_scout.empty and config.COL_PLAY_TYPE in c_scout.columns else pd.DataFrame()
+    live_subset = c_live[c_live.get(config.COL_PLAY_TYPE) == play_type] if not c_live.empty and config.COL_PLAY_TYPE in c_live.columns else pd.DataFrame()
+
+    scout_total = len(scout_subset)
+    live_total = len(live_subset)
+
+    if config.COL_PLAY_CALL not in c_scout.columns and config.COL_PLAY_CALL not in c_live.columns:
+        return []
+
+    scout_counts = scout_subset[config.COL_PLAY_CALL].value_counts() if scout_total and config.COL_PLAY_CALL in scout_subset.columns else pd.Series(dtype=int)
+    live_counts = live_subset[config.COL_PLAY_CALL].value_counts() if live_total and config.COL_PLAY_CALL in live_subset.columns else pd.Series(dtype=int)
+
+    all_plays = sorted(set(scout_counts.index) | set(live_counts.index))
+    changes = []
+    for play_name in all_plays:
+        scout_count = int(scout_counts.get(play_name, 0))
+        live_count = int(live_counts.get(play_name, 0))
+        scout_pct = round(scout_count / scout_total * 100, 1) if scout_total else 0.0
+        live_pct = round(live_count / live_total * 100, 1) if live_total else 0.0
+
+        changes.append(PlayChange(
+            play_name=str(play_name),
+            scout_pct=scout_pct,
+            live_pct=live_pct,
+            scout_count=scout_count,
+            live_count=live_count,
+            change=round(live_pct - scout_pct, 1),
+            is_new=(scout_count == 0 and live_count > 0),
+        ))
+
+    return sorted(changes, key=lambda c: abs(c.change), reverse=True)
+
+
+def build_formation_comparisons(
+    scout_df: pd.DataFrame,
+    live_df: pd.DataFrame,
+    top_n: int = config.TOP_N_FORMATIONS,
+) -> list[FormationComparison]:
+    c_scout = _filter_out_penalties(scout_df)
+    c_live = _filter_out_penalties(live_df)
+
+    have_scout = config.COL_FORMATION in c_scout.columns and not c_scout.empty
+    have_live = config.COL_FORMATION in c_live.columns and not c_live.empty
+    if not have_scout and not have_live:
+        return []
+
+    scout_total = len(c_scout)
+    live_total = len(c_live)
+    scout_counts = c_scout[config.COL_FORMATION].value_counts() if have_scout else pd.Series(dtype=int)
+    live_counts = c_live[config.COL_FORMATION].value_counts() if have_live else pd.Series(dtype=int)
+
+    comparisons = []
+    for formation in set(scout_counts.index) | set(live_counts.index):
+        scout_count = int(scout_counts.get(formation, 0))
+        live_count = int(live_counts.get(formation, 0))
+        scout_pct = round(scout_count / scout_total * 100, 1) if scout_total else 0.0
+        live_pct = round(live_count / live_total * 100, 1) if live_total else 0.0
+
+        scout_subset = c_scout[c_scout[config.COL_FORMATION] == formation] if have_scout else pd.DataFrame()
+        live_subset = c_live[c_live[config.COL_FORMATION] == formation] if have_live else pd.DataFrame()
+
+        scout_run_pct, scout_pass_pct = _run_pass_split(scout_subset)
+        live_run_pct, live_pass_pct = _run_pass_split(live_subset)
+
+        scout_plays = set(scout_subset[config.COL_PLAY_CALL]) if config.COL_PLAY_CALL in scout_subset.columns else set()
+        live_plays = set(live_subset[config.COL_PLAY_CALL]) if config.COL_PLAY_CALL in live_subset.columns else set()
+
+        change = round(live_pct - scout_pct, 1)
+        is_new = scout_count == 0 and live_count > 0
+
+        comparisons.append(FormationComparison(
+            formation=str(formation),
+            scout_pct=scout_pct,
+            live_pct=live_pct,
+            change=change,
+            is_new=is_new,
+            scout_count=scout_count,
+            live_count=live_count,
+            scout_run_pct=scout_run_pct,
+            scout_pass_pct=scout_pass_pct,
+            live_run_pct=live_run_pct,
+            live_pass_pct=live_pass_pct,
+            pass_pct_change=round(live_pass_pct - scout_pass_pct, 1),
+            scout_top_runs=_top_play_calls(scout_subset, config.PLAY_TYPE_RUN, config.TOP_N_PLAYS),
+            scout_top_passes=_top_play_calls(scout_subset, config.PLAY_TYPE_PASS, config.TOP_N_PLAYS),
+            live_top_runs=_top_play_calls(live_subset, config.PLAY_TYPE_RUN, config.TOP_N_PLAYS),
+            live_top_passes=_top_play_calls(live_subset, config.PLAY_TYPE_PASS, config.TOP_N_PLAYS),
+            new_plays=sorted(str(p) for p in (live_plays - scout_plays)),
+            status=_formation_status(scout_count, live_count, change, is_new),
+            confident=is_confident(live_count),
+        ))
+
+    comparisons.sort(key=lambda c: max(c.scout_pct, c.live_pct), reverse=True)
+    return comparisons[:top_n]
+
+
+def build_down_distance_expectations(scout_df: pd.DataFrame, live_df: pd.DataFrame) -> list[SituationExpectation]:
     c_scout = _filter_out_penalties(scout_df)
     c_live = _filter_out_penalties(live_df)
 
@@ -870,7 +898,7 @@ def build_down_distance_expectations(scout_df: pd.DataFrame, live_df: pd.DataFra
     return results
 
 
-def build_field_zone_expectations(scout_df: pd.DataFrame, live_df: pd.DataFrame) -> List[SituationExpectation]:
+def build_field_zone_expectations(scout_df: pd.DataFrame, live_df: pd.DataFrame) -> list[SituationExpectation]:
     c_scout = _filter_out_penalties(scout_df)
     c_live = _filter_out_penalties(live_df)
     if not (has_field_position_data(c_scout) or has_field_position_data(c_live)):
@@ -879,33 +907,10 @@ def build_field_zone_expectations(scout_df: pd.DataFrame, live_df: pd.DataFrame)
     return _build_situation_expectations(c_scout, c_live, "FIELD_ZONE", labels)
 
 
-@dataclass
-class SituationSelfSummary:
-    label: str
-    play_count: int
-    run_pct: float
-    pass_pct: float
-    top_plays: List[PlayProbability]
-    confident: bool
-
-
-def _self_situation_summary(label: str, df: pd.DataFrame) -> SituationSelfSummary:
-    clean_df = _filter_out_penalties(df)
-    run_pct, pass_pct = _run_pass_split(clean_df)
-    dom, _dom_pct = _dominant(run_pct, pass_pct)
-    return SituationSelfSummary(
-        label=label,
-        play_count=len(clean_df),
-        run_pct=run_pct,
-        pass_pct=pass_pct,
-        top_plays=_play_probabilities(clean_df, _play_type_of(dom), config.EXPECTED_CALL_TOP_N),
-        confident=is_confident(len(clean_df)),
-    )
-
-
-def build_down_distance_summary(df: pd.DataFrame) -> List[SituationSelfSummary]:
+def build_down_distance_summary(df: pd.DataFrame) -> list[SituationSelfSummary]:
     clean_df = _filter_out_penalties(df)
     results = []
+    
     for label in _down_distance_labels():
         subset = clean_df[clean_df["DOWN_DISTANCE_LABEL"] == label] if "DOWN_DISTANCE_LABEL" in clean_df.columns else pd.DataFrame()
         if subset.empty:
@@ -921,168 +926,18 @@ def build_down_distance_summary(df: pd.DataFrame) -> List[SituationSelfSummary]:
     return results
 
 
-def build_field_zone_summary(df: pd.DataFrame) -> List[SituationSelfSummary]:
+def build_field_zone_summary(df: pd.DataFrame) -> list[SituationSelfSummary]:
     clean_df = _filter_out_penalties(df)
     if not has_field_position_data(clean_df):
         return []
+        
     results = []
-    for zone_name, _low, _high in config.FIELD_ZONES:
-        subset = clean_df[clean_df["FIELD_ZONE"] == zone_name] if "FIELD_ZONE" in clean_df.columns else pd.DataFrame()
+    labels = [zone_name for zone_name, _low, _high in config.FIELD_ZONES]
+    
+    for label in labels:
+        subset = clean_df[clean_df["FIELD_ZONE"] == label] if "FIELD_ZONE" in clean_df.columns else pd.DataFrame()
         if subset.empty:
             continue
-        results.append(_self_situation_summary(zone_name, subset))
+        results.append(_self_situation_summary(label, subset))
+
     return results
-
-
-@dataclass
-class ExplosiveComparison:
-    play_name: str
-    play_type: str
-    scout_count: int
-    live_count: int
-
-
-def build_explosive_comparison(
-    scout_df: pd.DataFrame, live_df: pd.DataFrame,
-    top_n: int = config.TOP_N_PLAYS,
-) -> List[ExplosiveComparison]:
-    c_scout = _filter_out_penalties(scout_df)
-    c_live = _filter_out_penalties(live_df)
-
-    scout_ex = build_explosive_report(c_scout, top_n=10 ** 6)
-    live_ex = build_explosive_report(c_live, top_n=10 ** 6)
-
-    rows: List[ExplosiveComparison] = []
-    for play_type, key in ((config.PLAY_TYPE_RUN, "runs"), (config.PLAY_TYPE_PASS, "passes")):
-        scout_map = {s.play_name: s.explosive_count for s in scout_ex[key]}
-        live_map = {s.play_name: s.explosive_count for s in live_ex[key]}
-        for name in set(scout_map) | set(live_map):
-            rows.append(ExplosiveComparison(
-                play_name=name,
-                play_type=play_type,
-                scout_count=scout_map.get(name, 0),
-                live_count=live_map.get(name, 0),
-            ))
-
-    rows.sort(key=lambda r: max(r.scout_count, r.live_count), reverse=True)
-    return rows[: top_n * 2]
-
-
-@dataclass
-class BiggestChanges:
-    formation_movers: List[FormationChange]
-    play_movers: List[PlayChange]
-    new_plays: List[str]
-    new_formations: List[str]
-
-
-def build_biggest_changes(
-    formation_changes: List[FormationChange],
-    run_changes: List[PlayChange],
-    pass_changes: List[PlayChange],
-    top_n: int = config.BIGGEST_CHANGES_TOP_N,
-) -> BiggestChanges:
-    def movers(changes, min_change):
-        confident = [c for c in changes if not c.is_new and abs(c.change) >= min_change]
-        confident.sort(key=lambda c: abs(c.change), reverse=True)
-        return confident[:top_n]
-
-    formation_movers = movers(formation_changes, config.ALERT_FORMATION_CHANGE_PCT)
-    play_movers = movers(run_changes + pass_changes, config.ALERT_PLAY_CHANGE_PCT)
-
-    new_formations = [c.formation for c in formation_changes if c.is_new and c.live_pct > 0]
-    new_plays = [
-        c.play_name for c in (run_changes + pass_changes)
-        if c.is_new and c.live_count >= config.NEW_PLAY_MIN_LIVE_COUNT
-    ]
-
-    return BiggestChanges(
-        formation_movers=formation_movers,
-        play_movers=play_movers,
-        new_plays=new_plays,
-        new_formations=new_formations,
-    )
-
-
-def build_coach_alerts(
-    identity: IdentityComparison,
-    formation_comparisons: List[FormationComparison],
-    formation_changes: List[FormationChange],
-    run_changes: List[PlayChange],
-    pass_changes: List[PlayChange],
-    down_distance_expectations: List[SituationExpectation],
-    field_zone_expectations: List[SituationExpectation],
-) -> List[str]:
-    alerts: List[str] = []
-
-    if abs(identity.pass_pct_change) >= config.ALERT_RUNPASS_CHANGE_PCT:
-        direction = "more" if identity.pass_pct_change > 0 else "less"
-        alerts.append(f"Passing {abs(identity.pass_pct_change):.0f}% {direction} than the scouting report.")
-
-    for c in formation_changes:
-        if c.is_new and c.live_pct > 0:
-            alerts.append(f"{c.formation} has appeared for the first time ({c.live_pct:.0f}% of live snaps).")
-        elif abs(c.change) >= config.ALERT_FORMATION_CHANGE_PCT:
-            direction = "increased" if c.change > 0 else "decreased"
-            alerts.append(f"{c.formation} usage has {direction} {abs(c.change):.0f}%.")
-
-    for fc in formation_comparisons:
-        if not fc.confident:
-            continue
-        if fc.pass_pct_change >= config.ALERT_RUNPASS_CHANGE_PCT:
-            alerts.append(f"They are throwing much more from {fc.formation} ({fc.live_pass_pct:.0f}% pass).")
-        elif fc.pass_pct_change <= -config.ALERT_RUNPASS_CHANGE_PCT:
-            alerts.append(f"They are running much more from {fc.formation} ({fc.live_run_pct:.0f}% run).")
-
-    for changes, label in ((run_changes, "run"), (pass_changes, "pass")):
-        for c in changes:
-            if c.is_new and c.live_count >= config.NEW_PLAY_MIN_LIVE_COUNT:
-                alerts.append(f"{c.play_name} has appeared - not on scout film.")
-            elif (c.scout_count >= config.LOW_USAGE_ALERT_MIN_SCOUT_COUNT
-                  and c.live_count <= config.LOW_USAGE_ALERT_MAX_LIVE_COUNT):
-                alerts.append(f"{c.play_name} was a scout favorite, barely used live.")
-
-        risers = [c for c in changes if c.change >= config.ALERT_PLAY_CHANGE_PCT]
-        if risers:
-            top_riser = max(risers, key=lambda c: c.live_pct)
-            if top_riser.live_pct == max((c.live_pct for c in changes), default=0):
-                alerts.append(f"{top_riser.play_name} has become their primary {label}.")
-
-    for exp in down_distance_expectations:
-        if not (exp.changed and exp.live_confident):
-            continue
-        if exp.verdict == config.STATUS_FLIPPED:
-            alerts.append(
-                f"{exp.label} has flipped from {exp.scout_dominant_type.lower()}-heavy "
-                f"to {exp.live_dominant_type.lower()}-heavy."
-            )
-        else:
-            alerts.append(f"On {exp.label} they are {exp.verdict.lower()} "
-                          f"({exp.live_pass_pct:.0f}% pass vs {exp.scout_pass_pct:.0f}% scouted).")
-
-    for exp in field_zone_expectations:
-        if not exp.live_confident:
-            continue
-        if exp.live_dominant_type == "Pass" and exp.live_pass_pct >= 65:
-            alerts.append(f"In the {exp.label} they are throwing {exp.live_pass_pct:.0f}%.")
-        elif exp.live_dominant_type == "Run" and exp.live_run_pct >= 65:
-            alerts.append(f"In the {exp.label} they are running {exp.live_run_pct:.0f}%.")
-
-    return alerts
-
-
-def build_scout_fidelity_verdict(
-    identity: IdentityComparison,
-    formation_changes: List[FormationChange],
-    run_changes: List[PlayChange],
-    pass_changes: List[PlayChange],
-) -> str:
-    has_big_rp_shift = abs(identity.pass_pct_change) >= config.ALERT_RUNPASS_CHANGE_PCT
-    has_big_form_shift = any(abs(c.change) >= config.ALERT_FORMATION_CHANGE_PCT for c in formation_changes)
-    has_new_form = any(c.is_new and c.live_pct > 0 for c in formation_changes)
-
-    if has_big_rp_shift and (has_big_form_shift or has_new_form):
-        return "Completely different offense"
-    if has_big_rp_shift or has_big_form_shift or has_new_form:
-        return "Significant changes"
-    return "Following scout"
