@@ -53,7 +53,7 @@ def main() -> None:
 
     _write_defense_report(spreadsheet, scout_df, scout_ready, live_df, live_ready)
     _write_offense_report(spreadsheet, off_live_df, off_ready)
-    _write_stats_report(spreadsheet, odk_df, off_live_df, off_ready, live_df, live_ready)
+    _write_stats_report(spreadsheet, off_live_df, off_ready, live_df, live_ready)
 
     print()
     print("=" * 70)
@@ -154,19 +154,25 @@ def _write_offense_report(spreadsheet, off_live_df, off_ready: bool) -> None:
     print("OFF ANALYSIS written and formatted.")
 
 
-def _write_stats_report(spreadsheet, odk_df, off_live_df, off_ready: bool, live_df, live_ready: bool) -> None:
+def _write_stats_report(spreadsheet, off_live_df, off_ready: bool, live_df, live_ready: bool) -> None:
     print("Building Stats tab...")
 
     qb_stats = analysis.build_qb_stats(off_live_df) if off_ready else analysis.QBStats(0, 0, 0.0, 0.0, 0, 0)
     ball_carrier_stats = analysis.build_ball_carrier_stats(off_live_df) if off_ready else []
     def_live_yards = analysis.build_play_type_yards(live_df) if live_ready else analysis.PlayTypeYards(0.0, 0.0)
-    penalties = analysis.build_penalty_stats(odk_df)
+
+    # Calculate penalty stats
+    penalty_count, penalty_yards = (
+        analysis.build_penalty_stats(off_live_df) if off_ready 
+        else (0, 0.0)
+    )
 
     report_rows = reports.build_stats_report(
         qb_stats=qb_stats,
         ball_carrier_stats=ball_carrier_stats,
         def_live_yards=def_live_yards,
-        penalties=penalties,
+        penalty_count=penalty_count,
+        penalty_yards=penalty_yards,
     )
 
     ws = sheets.write_report(spreadsheet, report_rows, sheet_name=config.STATS_OUTPUT_SHEET_NAME)
