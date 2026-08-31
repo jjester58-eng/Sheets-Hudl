@@ -1,31 +1,17 @@
 """
 analysis.py
 -----------
-All football calculations live here. Every function takes a pandas
-DataFrame (or a value derived from one) and returns plain data structures
-(dataclasses, dicts, lists) - no Google Sheets code, no formatting/string
-layout. That separation is what lets reports.py and sheets.py stay simple.
-
-The guiding question this module answers, in pieces:
-    "Given the formation, down, distance, and field position,
-     what is the offense most likely to run?"
+All football calculations live here.
 """
 
 from dataclasses import dataclass
 from typing import List, Optional
-
 import pandas as pd
-
 import config
 
 
-# ---------------------------------------------------------------------------
-# Data shapes returned by this module
-# ---------------------------------------------------------------------------
-
 @dataclass
 class Summary:
-    """Section 1: the headline numbers for a whole dataset."""
     total_plays: int
     run_pct: float
     pass_pct: float
@@ -35,19 +21,12 @@ class Summary:
 
 @dataclass
 class PlayTypeYards:
-    """Run/pass yardage totals from a play dataframe."""
     rushing_yards: float
     passing_yards: float
 
 
 @dataclass
 class BallCarrierStats:
-    """One offensive player's carries, receptions, and touchdowns, derived
-    from BALL CARRIER + PLAY TYPE + Result. On a Run row BALL CARRIER is the
-    rusher; on a Pass row it's the receiver - Result decides which bucket
-    (Rush/Rush TD vs Complete/Complete TD) a row counts toward. Fumbles are
-    tracked separately per carrier regardless of play type, since a fumble
-    row has no GN/LS value to add to yardage."""
     ball_carrier: str
     carries: int
     rush_yards: float
@@ -61,10 +40,6 @@ class BallCarrierStats:
 
 @dataclass
 class QBStats:
-    """Team-wide passing stats. There's no QB/passer column in ODK - BALL
-    CARRIER holds the receiver's name on pass plays - so these are computed
-    from Result alone and reported as one team total rather than per-player.
-    Interceptions count against this; fumbles never do."""
     attempts: int
     completions: int
     comp_pct: float
@@ -75,7 +50,6 @@ class QBStats:
 
 @dataclass
 class PlayCallStat:
-    """A single play call's usage and effectiveness."""
     play_name: str
     calls: int
     avg_gain: float
@@ -84,9 +58,6 @@ class PlayCallStat:
 
 @dataclass
 class PlayProbability:
-    """One play's likelihood inside a slice of plays - the atom the Expected
-    Call engine is built from. `pct` is the play's share among the plays it
-    was ranked within (e.g. share of all runs on 1st & Long)."""
     play_name: str
     pct: float
     count: int
@@ -94,7 +65,6 @@ class PlayProbability:
 
 @dataclass
 class FormationSummary:
-    """Section 2: one formation's usage rate and its go-to plays."""
     formation: str
     usage_pct: float
     run_pct: float
@@ -103,25 +73,13 @@ class FormationSummary:
     top_pass_plays: List[str]
 
 
-# ---------------------------------------------------------------------------
-# Column prep
-# ---------------------------------------------------------------------------
-
-# Raw PLAY TYPE values that map to each canonical type. Add more shorthand
-# here if the sheet ever uses something not covered - this is the ONLY place
-# that needs to change.
 _RUN_TOKENS = {"run", "rush", "r"}
 _PASS_TOKENS = {"pass", "throw", "p", "pa", "ps"}
 
 
 def _normalize_play_type(value):
-    """Normalizes a raw PLAY TYPE cell to canonical 'Run'/'Pass' regardless
-    of casing, shorthand, or stray whitespace. Anything unrecognized is
-    passed through unchanged (stripped) so it's visible in diagnostics
-    rather than silently disappearing."""
     if pd.isna(value):
         return value
-
     text = str(value).strip().lower()
     if text in _RUN_TOKENS:
         return config.PLAY_TYPE_RUN
@@ -131,36 +89,19 @@ def _normalize_play_type(value):
 
 
 def _normalize_result(value) -> str:
-    """Lowercases and strips a raw Result cell for tolerant comparison
-    against the config.RESULT_* constants. Values not recognized by the
-    stat-building functions below are simply not matched - they don't
-    raise, they just don't count toward anything."""
     if pd.isna(value):
         return ""
     return str(value).strip().lower()
 
 
 def add_situational_columns(df: pd.DataFrame) -> pd.DataFrame:
-    """Adds derived columns used throughout the analysis: a down/distance
-    bucket label and (if the data supports it) a field position zone. Also
-    normalizes PLAY TYPE to canonical Run/Pass - this is the ONLY place
-    that normalization happens; sheets.py must not duplicate it.
-
-    Safe to call on an empty DataFrame - returns it unchanged.
-    """
     if df.empty:
         return df
 
     df = df.copy()
 
     if config.COL_PLAY_TYPE in df.columns:
-        before = df[config.COL_PLAY_TYPE].value_counts(dropna=False)
         df[config.COL_PLAY_TYPE] = df[config.COL_PLAY_TYPE].map(_normalize_play_type)
-        after = df[config.COL_PLAY_TYPE].value_counts(dropna=False)
-        unmapped = set(after.index) - {config.PLAY_TYPE_RUN, config.PLAY_TYPE_PASS}
-        if unmapped:
-            print(f"WARNING: PLAY TYPE values not recognized as Run/Pass: {unmapped} "
-                  f"(raw values seen: {before.to_dict()})")
 
     if config.COL_GAIN_LOSS in df.columns:
         df[config.COL_GAIN_LOSS] = pd.to_numeric(df[config.COL_GAIN_LOSS], errors="coerce")
@@ -188,7 +129,6 @@ def add_situational_columns(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def _distance_bucket(distance: Optional[float]) -> str:
-    """Buckets distance-to-go into Short/Medium/Long."""
     if pd.isna(distance):
         return "Unknown"
     if distance <= config.DIST_SHORT_MAX:
@@ -199,34 +139,18 @@ def _distance_bucket(distance: Optional[float]) -> str:
 
 
 def _down_distance_label(down: Optional[float], dist_bucket: str) -> str:
-    """Builds a label like '2nd & Long'. Returns 'Other' for downs we don't
-    track (e.g. 4th down) so callers can filter it out cleanly."""
     if pd.isna(down) or int(down) not in config.DOWN_ORDINALS:
         return "Other"
     return f"{config.DOWN_ORDINALS[int(down)]} & {dist_bucket}"
 
 
 def _yards_from_own_goal(v: Optional[float]) -> Optional[float]:
-    """Converts the coach's signed YARD LN value into a continuous 0-100
-    scale measured from the offense's own goal line.
-
-    Convention (offense perspective): own side is negative, magnitude =
-    yards from the offense's own goal (-1 = own 1, -49 = near midfield on
-    own side). Opponent side is positive, magnitude = yards from the
-    OPPONENT's goal, counting down (49 = just past midfield, 1 = opponent's
-    1-yard line, 50 = touchdown... in practice snaps stop before 0/50).
-
-    Examples: -10 -> 10, 45 -> 55, -45 -> 45, 5 -> 95.
-    Returns None if v is missing.
-    """
     if pd.isna(v):
         return None
     return -v if v < 0 else 100 - v
 
 
 def _field_zone(position: Optional[float]) -> str:
-    """Maps a raw YARD LN value to a named zone via the 0-100 conversion.
-    Returns 'Unknown' if the value doesn't fall in any configured zone."""
     y = _yards_from_own_goal(position)
     if y is None:
         return "Unknown"
@@ -237,8 +161,6 @@ def _field_zone(position: Optional[float]) -> str:
 
 
 def has_field_position_data(df: pd.DataFrame) -> bool:
-    """Whether this dataset has usable field position data. Used to decide
-    whether Section 6 can be produced at all."""
     return (
         not df.empty
         and config.COL_FIELD_POSITION in df.columns
@@ -246,13 +168,7 @@ def has_field_position_data(df: pd.DataFrame) -> bool:
     )
 
 
-# ---------------------------------------------------------------------------
-# Shared helpers
-# ---------------------------------------------------------------------------
-
 def _run_pass_split(df: pd.DataFrame) -> tuple:
-    """Returns (run_pct, pass_pct) for a slice of plays. Defensive against
-    an empty slice or a missing PLAY TYPE column."""
     if df.empty or config.COL_PLAY_TYPE not in df.columns:
         return 0.0, 0.0
 
@@ -266,42 +182,17 @@ def _run_pass_split(df: pd.DataFrame) -> tuple:
 
 
 def build_play_type_yards(df: pd.DataFrame) -> PlayTypeYards:
-    """Totals GN/LS separately for Run and Pass plays.
-
-    Missing or non-numeric GN/LS values count as zero. This works for either
-    ODK side: use it for our offense in OFF ANALYSIS or the opponent offense
-    in DEF ANALYSIS.
-    """
     required = {config.COL_PLAY_TYPE, config.COL_GAIN_LOSS}
     if df.empty or not required.issubset(df.columns):
         return PlayTypeYards(0.0, 0.0)
 
     yards = pd.to_numeric(df[config.COL_GAIN_LOSS], errors="coerce").fillna(0)
-    rushing_yards = float(
-        yards[df[config.COL_PLAY_TYPE] == config.PLAY_TYPE_RUN].sum()
-    )
-    passing_yards = float(
-        yards[df[config.COL_PLAY_TYPE] == config.PLAY_TYPE_PASS].sum()
-    )
+    rushing_yards = float(yards[df[config.COL_PLAY_TYPE] == config.PLAY_TYPE_RUN].sum())
+    passing_yards = float(yards[df[config.COL_PLAY_TYPE] == config.PLAY_TYPE_PASS].sum())
     return PlayTypeYards(rushing_yards, passing_yards)
 
 
 def build_ball_carrier_stats(df: pd.DataFrame) -> List[BallCarrierStats]:
-    """Groups offensive ODK plays by BALL CARRIER and derives carries,
-    rushing yards, rushing TDs, receptions, receiving yards, receiving TDs,
-    and fumbles from PLAY TYPE + Result.
-
-    Carries  = Run rows with Result in {Rush, Rush, TD}
-    Rush TD  = Run rows with Result == Rush, TD
-    Receptions = Pass rows with Result in {Complete, Complete, TD}
-    Rec TD   = Pass rows with Result == Complete, TD
-    Fumbles  = any row (Run or Pass) with Result == Fumble, credited to
-               BALL CARRIER regardless of play type - these carry no GN/LS
-               value, so they never add to carries/receptions/yards.
-
-    Blank ball carriers are excluded so incomplete entries don't create a
-    fake player row.
-    """
     required = {
         config.COL_BALL_CARRIER,
         config.COL_PLAY_TYPE,
@@ -317,9 +208,7 @@ def build_ball_carrier_stats(df: pd.DataFrame) -> List[BallCarrierStats]:
         config.COL_RESULT,
         config.COL_GAIN_LOSS,
     ]].copy()
-    work[config.COL_BALL_CARRIER] = (
-        work[config.COL_BALL_CARRIER].fillna("").astype(str).str.strip()
-    )
+    work[config.COL_BALL_CARRIER] = work[config.COL_BALL_CARRIER].fillna("").astype(str).str.strip()
     work = work[work[config.COL_BALL_CARRIER] != ""]
     if work.empty:
         return []
@@ -362,20 +251,10 @@ def build_ball_carrier_stats(df: pd.DataFrame) -> List[BallCarrierStats]:
             fumbles=fumbles,
         ))
 
-    return sorted(
-        players,
-        key=lambda p: (-(p.rush_yards + p.rec_yards), p.ball_carrier),
-    )
+    return sorted(players, key=lambda p: (-(p.rush_yards + p.rec_yards), p.ball_carrier))
 
 
 def build_qb_stats(df: pd.DataFrame) -> QBStats:
-    """Team-wide passing line derived from Result on every Pass-type row.
-
-    Attempts = Complete, Complete TD, Incomplete, or Interception.
-    A Fumble row is never counted as an attempt and never credited as an
-    interception - fumbles aren't a QB stat, per the coach's rule.
-    Pass yards only accrue on completions (Complete / Complete TD).
-    """
     required = {config.COL_PLAY_TYPE, config.COL_RESULT, config.COL_GAIN_LOSS}
     if df.empty or not required.issubset(df.columns):
         return QBStats(0, 0, 0.0, 0.0, 0, 0)
@@ -415,9 +294,6 @@ def build_qb_stats(df: pd.DataFrame) -> QBStats:
 
 
 def _top_play_calls(df: pd.DataFrame, play_type: str, top_n: int) -> List[str]:
-    """Returns just the play call names (no stats) for the most-called
-    plays of a given type, most-called first. Used for the compact
-    'Runs: Counter, Power, Dive' style lines."""
     if df.empty or config.COL_PLAY_CALL not in df.columns or config.COL_PLAY_TYPE not in df.columns:
         return []
 
@@ -430,8 +306,6 @@ def _top_play_calls(df: pd.DataFrame, play_type: str, top_n: int) -> List[str]:
 
 
 def _play_call_stats(df: pd.DataFrame, play_type: str) -> List[PlayCallStat]:
-    """Returns every play call of the given type with usage count, average
-    gain, and explosive count - used to build the ranked Top Plays lists."""
     if df.empty or config.COL_PLAY_CALL not in df.columns or config.COL_PLAY_TYPE not in df.columns:
         return []
 
@@ -462,13 +336,6 @@ def _play_call_stats(df: pd.DataFrame, play_type: str) -> List[PlayCallStat]:
 
 
 def _play_probabilities(df: pd.DataFrame, play_type: Optional[str], top_n: int) -> List[PlayProbability]:
-    """Ranks play calls by frequency and returns each one's probability
-    (share of the slice), most-likely first. This is what powers the
-    'Most likely: 1. Counter 38%  2. Power 29%' Expected Call lines.
-
-    If `play_type` is given, plays are ranked and shared *within* that type
-    (share of all runs, or all passes); if None, within the whole slice.
-    """
     if df.empty or config.COL_PLAY_CALL not in df.columns:
         return []
 
@@ -494,16 +361,10 @@ def _play_probabilities(df: pd.DataFrame, play_type: Optional[str], top_n: int) 
 
 
 def is_confident(play_count: int) -> bool:
-    """Whether a slice has enough plays to trust a tendency drawn from it."""
     return play_count >= config.MIN_CONFIDENCE_SAMPLE
 
 
-# ---------------------------------------------------------------------------
-# Section 1: Summary
-# ---------------------------------------------------------------------------
-
 def build_summary(df: pd.DataFrame) -> Summary:
-    """Headline numbers for the whole dataset."""
     if df.empty:
         return Summary(0, 0.0, 0.0, 0, 0)
 
@@ -527,13 +388,7 @@ def build_summary(df: pd.DataFrame) -> Summary:
     )
 
 
-# ---------------------------------------------------------------------------
-# Section 2: Top Formations
-# ---------------------------------------------------------------------------
-
 def build_top_formations(df: pd.DataFrame, top_n: int = config.TOP_N_FORMATIONS) -> List[FormationSummary]:
-    """Ranks formations by usage and returns the top N, each with its
-    run/pass split and go-to plays."""
     if df.empty or config.COL_FORMATION not in df.columns:
         return []
 
@@ -556,23 +411,11 @@ def build_top_formations(df: pd.DataFrame, top_n: int = config.TOP_N_FORMATIONS)
     return summaries
 
 
-# ---------------------------------------------------------------------------
-# Sections 3 & 4: Top Run Plays / Top Pass Plays (overall)
-# ---------------------------------------------------------------------------
-
 def build_top_plays(df: pd.DataFrame, play_type: str, top_n: int = config.TOP_N_PLAYS) -> List[PlayCallStat]:
-    """Top N plays of one type (Run or Pass), overall, ranked by how often
-    they're called."""
     return _play_call_stats(df, play_type)[:top_n]
 
 
-# ---------------------------------------------------------------------------
-# Explosive Plays (per dataset - the raw material for the comparison table)
-# ---------------------------------------------------------------------------
-
 def build_explosive_report(df: pd.DataFrame, top_n: int = config.TOP_N_PLAYS) -> dict:
-    """Returns {'runs': [...], 'passes': [...]} of the plays that produce
-    the most explosive gains, ranked by explosive count."""
     if df.empty:
         return {"runs": [], "passes": []}
 
@@ -582,31 +425,14 @@ def build_explosive_report(df: pd.DataFrame, top_n: int = config.TOP_N_PLAYS) ->
     top_runs = sorted(run_stats, key=lambda s: s.explosive_count, reverse=True)[:top_n]
     top_passes = sorted(pass_stats, key=lambda s: s.explosive_count, reverse=True)[:top_n]
 
-    # Drop plays that haven't actually produced any explosive gains -
-    # showing a "top explosive play" with zero explosive plays isn't useful.
     top_runs = [s for s in top_runs if s.explosive_count > 0]
     top_passes = [s for s in top_passes if s.explosive_count > 0]
 
     return {"runs": top_runs, "passes": top_passes}
 
 
-# ---------------------------------------------------------------------------
-# --- Everything below this line is COMPARISON-FIRST. Each structure       --
-# --- answers the same four questions for one slice of the game:           --
-# ---   1. What did scout say?                                             --
-# ---   2. What are they doing tonight (live)?                            --
-# ---   3. Did they change?                                               --
-# ---   4. If they line up here again, what should we expect?             --
-# ---------------------------------------------------------------------------
-
-
-# ---------------------------------------------------------------------------
-# Section 1: Overall Identity (scout vs live headline)
-# ---------------------------------------------------------------------------
-
 @dataclass
 class IdentityComparison:
-    """Section 1: the one-glance 'who are they, and have they changed' line."""
     scout_plays: int
     live_plays: int
     scout_run_pct: float
@@ -622,7 +448,6 @@ class IdentityComparison:
 
 
 def build_identity_comparison(scout: Summary, live: Summary) -> IdentityComparison:
-    """Folds the scout and live Summaries into one side-by-side identity."""
     return IdentityComparison(
         scout_plays=scout.total_plays,
         live_plays=live.total_plays,
@@ -639,23 +464,17 @@ def build_identity_comparison(scout: Summary, live: Summary) -> IdentityComparis
     )
 
 
-# ---------------------------------------------------------------------------
-# Raw usage movers (feed Biggest Changes, Coach Alerts, Game Plan Match)
-# ---------------------------------------------------------------------------
-
 @dataclass
 class FormationChange:
-    """How one formation's usage rate differs between scout and live."""
     formation: str
     scout_pct: float
     live_pct: float
-    change: float       # live_pct - scout_pct (or live_pct if is_new)
-    is_new: bool        # never appeared in scout data at all
+    change: float
+    is_new: bool
 
 
 @dataclass
 class PlayChange:
-    """How one play call's usage rate differs between scout and live."""
     play_name: str
     scout_pct: float
     live_pct: float
@@ -666,8 +485,6 @@ class PlayChange:
 
 
 def compare_formations(scout_df: pd.DataFrame, live_df: pd.DataFrame) -> List[FormationChange]:
-    """Compares formation usage % between scout and live, sorted by the
-    largest absolute change first (biggest surprises float to the top)."""
     if config.COL_FORMATION not in scout_df.columns and config.COL_FORMATION not in live_df.columns:
         return []
 
@@ -696,8 +513,6 @@ def compare_formations(scout_df: pd.DataFrame, live_df: pd.DataFrame) -> List[Fo
 
 
 def compare_plays(scout_df: pd.DataFrame, live_df: pd.DataFrame, play_type: str) -> List[PlayChange]:
-    """Compares play-call usage % (within the given play type) between
-    scout and live, sorted by largest absolute change first."""
     scout_subset = scout_df[scout_df.get(config.COL_PLAY_TYPE) == play_type] if not scout_df.empty else scout_df
     live_subset = live_df[live_df.get(config.COL_PLAY_TYPE) == play_type] if not live_df.empty else live_df
 
@@ -731,15 +546,8 @@ def compare_plays(scout_df: pd.DataFrame, live_df: pd.DataFrame, play_type: str)
     return sorted(changes, key=lambda c: abs(c.change), reverse=True)
 
 
-# ---------------------------------------------------------------------------
-# Section 2: Top Formations (scout vs live, per formation, with a status)
-# ---------------------------------------------------------------------------
-
 @dataclass
 class FormationComparison:
-    """Section 2: one formation, scout vs live - usage, run/pass tendency,
-    go-to plays on each side, and a plain status. Answers 'are they lining up
-    here as much, and doing the same things out of it?'"""
     formation: str
     scout_pct: float
     live_pct: float
@@ -756,14 +564,12 @@ class FormationComparison:
     scout_top_passes: List[str]
     live_top_runs: List[str]
     live_top_passes: List[str]
-    new_plays: List[str]        # called live out of this formation, never on film
+    new_plays: List[str]
     status: str
     confident: bool
 
 
 def _formation_status(scout_count: int, live_count: int, change: float, is_new: bool) -> str:
-    """Plain one-liner for a formation's usage: same / more / less / new,
-    guarded by confidence so a 2-snap sample never reads as a real trend."""
     if live_count == 0:
         return "Not seen live yet"
     if not is_confident(live_count):
@@ -782,9 +588,6 @@ def build_formation_comparisons(
     live_df: pd.DataFrame,
     top_n: int = config.TOP_N_FORMATIONS,
 ) -> List[FormationComparison]:
-    """Builds a scout-vs-live comparison for the formations that matter most
-    (highest usage on either side), each with its run/pass tendency, go-to
-    plays, anything brand new, and a status."""
     have_scout = config.COL_FORMATION in scout_df.columns and not scout_df.empty
     have_live = config.COL_FORMATION in live_df.columns and not live_df.empty
     if not have_scout and not have_live:
@@ -840,25 +643,18 @@ def build_formation_comparisons(
     return comparisons[:top_n]
 
 
-# ---------------------------------------------------------------------------
-# Sections 4 & 5: Down & Distance / Field Position + the Expected Call engine
-# ---------------------------------------------------------------------------
-
 @dataclass
 class SituationExpectation:
-    """One situation (a down/distance bucket or a field zone), fully answered:
-    what scout expected, what's happening live, whether it changed, and the
-    ranked Expected Call for if they line up here again."""
     label: str
     scout_run_pct: float
     scout_pass_pct: float
     live_run_pct: float
     live_pass_pct: float
-    scout_dominant_type: str        # "Run" / "Pass"
+    scout_dominant_type: str
     scout_dominant_pct: float
     live_dominant_type: str
     live_dominant_pct: float
-    scout_expected_plays: List[PlayProbability]   # ranked within the dominant type
+    scout_expected_plays: List[PlayProbability]
     live_top_plays: List[PlayProbability]
     scout_count: int
     live_count: int
@@ -870,8 +666,6 @@ class SituationExpectation:
 
 
 def _dominant(run_pct: float, pass_pct: float) -> tuple:
-    """Returns ('Pass', pass_pct) or ('Run', run_pct) - ties go to Pass since
-    a balanced-to-passing look is the one a defense worries about more."""
     if pass_pct >= run_pct:
         return "Pass", pass_pct
     return "Run", run_pct
@@ -885,8 +679,6 @@ def _situation_verdict(
     scout_dom: str, live_dom: str, pass_change: float,
     live_confident: bool, live_count: int,
 ) -> tuple:
-    """Returns (verdict_text, changed) for a situation - the core 'did they
-    change?' judgement, refusing to assert change off a tiny live sample."""
     if live_count == 0:
         return "Not seen live yet", False
     if not live_confident:
@@ -941,8 +733,6 @@ def _build_situation_expectations(
     scout_df: pd.DataFrame, live_df: pd.DataFrame,
     label_col: str, ordered_labels: List[str],
 ) -> List[SituationExpectation]:
-    """Shared engine for Down & Distance and Field Position: for every label
-    that has plays on either side, builds a full SituationExpectation."""
     results = []
     for label in ordered_labels:
         scout_subset = scout_df[scout_df[label_col] == label] if label_col in scout_df.columns else pd.DataFrame()
@@ -954,36 +744,22 @@ def _build_situation_expectations(
 
 
 def _down_distance_labels() -> List[str]:
-    """Explicit report order for down & distance rows.
-    Skips 1st & Short (rare on 1st down). Overall Long/Medium/Short are
-    appended separately in build_down_distance_expectations via DIST_BUCKET.
-    """
     return [
-        "1st & Medium",
         "1st & Long",
-        "2nd & Short",
-        "2nd & Medium",
         "2nd & Long",
-        "3rd & Short",
-        "3rd & Medium",
+        "2nd & Medium",
+        "2nd & Short",
         "3rd & Long",
+        "3rd & Medium",
+        "3rd & Short",
     ]
 
 
 def build_down_distance_expectations(scout_df: pd.DataFrame, live_df: pd.DataFrame) -> List[SituationExpectation]:
-    """Down & Distance version of the Expected Call engine.
-
-    Order:
-      1st & Medium, 1st & Long,
-      2nd & Short, 2nd & Medium, 2nd & Long,
-      3rd & Short, 3rd & Medium, 3rd & Long,
-      then overall Long, Medium, Short (all downs combined).
-    """
     results = _build_situation_expectations(
         scout_df, live_df, "DOWN_DISTANCE_LABEL", _down_distance_labels()
     )
 
-    # Overall distance buckets (any down)  Long, Medium, Short
     for bucket in ("Long", "Medium", "Short"):
         scout_subset = (
             scout_df[scout_df["DIST_BUCKET"] == bucket]
@@ -1001,29 +777,19 @@ def build_down_distance_expectations(scout_df: pd.DataFrame, live_df: pd.DataFra
 
 
 def build_field_zone_expectations(scout_df: pd.DataFrame, live_df: pd.DataFrame) -> List[SituationExpectation]:
-    """Field Position version of the Expected Call engine. Empty if neither
-    dataset has usable field position data."""
     if not (has_field_position_data(scout_df) or has_field_position_data(live_df)):
         return []
     labels = [zone_name for zone_name, _low, _high in config.FIELD_ZONES]
     return _build_situation_expectations(scout_df, live_df, "FIELD_ZONE", labels)
 
 
-# ---------------------------------------------------------------------------
-# Offense self-tendency version of the situation engine - no scout side.
-# "What do WE tend to call here" rather than "what does the opponent do."
-# ---------------------------------------------------------------------------
-
 @dataclass
 class SituationSelfSummary:
-    """One situation (a down/distance bucket or a field zone) for a single
-    dataset - no scout/live comparison, since offense self-scouting has no
-    scout side. Answers 'what do we call here, and how often.'"""
     label: str
     play_count: int
     run_pct: float
     pass_pct: float
-    top_plays: List[PlayProbability]   # ranked within the dominant type
+    top_plays: List[PlayProbability]
     confident: bool
 
 
@@ -1041,8 +807,6 @@ def _self_situation_summary(label: str, df: pd.DataFrame) -> SituationSelfSummar
 
 
 def build_down_distance_summary(df: pd.DataFrame) -> List[SituationSelfSummary]:
-    """Self-tendency Down & Distance breakdown - same label order as the
-    scout-vs-live engine, single dataset."""
     results = []
     for label in _down_distance_labels():
         subset = df[df["DOWN_DISTANCE_LABEL"] == label] if "DOWN_DISTANCE_LABEL" in df.columns else pd.DataFrame()
@@ -1060,8 +824,6 @@ def build_down_distance_summary(df: pd.DataFrame) -> List[SituationSelfSummary]:
 
 
 def build_field_zone_summary(df: pd.DataFrame) -> List[SituationSelfSummary]:
-    """Self-tendency Field Position breakdown. Empty if the dataset has no
-    usable field position data."""
     if not has_field_position_data(df):
         return []
     results = []
@@ -1073,15 +835,10 @@ def build_field_zone_summary(df: pd.DataFrame) -> List[SituationSelfSummary]:
     return results
 
 
-# ---------------------------------------------------------------------------
-# Section 6: Explosive Plays (scout vs live, one small table)
-# ---------------------------------------------------------------------------
-
 @dataclass
 class ExplosiveComparison:
-    """One play's explosive-gain count, scout vs live."""
     play_name: str
-    play_type: str      # "Run" / "Pass"
+    play_type: str
     scout_count: int
     live_count: int
 
@@ -1090,9 +847,6 @@ def build_explosive_comparison(
     scout_df: pd.DataFrame, live_df: pd.DataFrame,
     top_n: int = config.TOP_N_PLAYS,
 ) -> List[ExplosiveComparison]:
-    """The plays that produce explosive gains, scout vs live, in one table.
-    A play appears if it went explosive on either side; ranked by its bigger
-    of the two counts so the current game's threats surface."""
     scout_ex = build_explosive_report(scout_df, top_n=10 ** 6)
     live_ex = build_explosive_report(live_df, top_n=10 ** 6)
 
@@ -1112,14 +866,8 @@ def build_explosive_comparison(
     return rows[: top_n * 2]
 
 
-# ---------------------------------------------------------------------------
-# Section 3: Biggest Changes (the section a coordinator reads first)
-# ---------------------------------------------------------------------------
-
 @dataclass
 class BiggestChanges:
-    """The handful of things that actually moved: usage risers/fallers among
-    formations and plays, plus anything brand new."""
     formation_movers: List[FormationChange]
     play_movers: List[PlayChange]
     new_plays: List[str]
@@ -1132,8 +880,6 @@ def build_biggest_changes(
     pass_changes: List[PlayChange],
     top_n: int = config.BIGGEST_CHANGES_TOP_N,
 ) -> BiggestChanges:
-    """Distills the raw change lists down to the biggest confident movers and
-    the brand-new looks - nothing small or noisy."""
     def movers(changes, min_change):
         confident = [c for c in changes if not c.is_new and abs(c.change) >= min_change]
         confident.sort(key=lambda c: abs(c.change), reverse=True)
@@ -1156,10 +902,6 @@ def build_biggest_changes(
     )
 
 
-# ---------------------------------------------------------------------------
-# Section 9: Coach Alerts (plain-English, actionable, confidence-gated)
-# ---------------------------------------------------------------------------
-
 def build_coach_alerts(
     identity: IdentityComparison,
     formation_comparisons: List[FormationComparison],
@@ -1169,17 +911,12 @@ def build_coach_alerts(
     down_distance_expectations: List[SituationExpectation],
     field_zone_expectations: List[SituationExpectation],
 ) -> List[str]:
-    """Turns every comparison into short, plain-English observations a coach
-    can act on between series. Live-based alerts fire only when the live
-    sample is big enough to trust."""
     alerts: List[str] = []
 
-    # Overall run/pass shift
     if abs(identity.pass_pct_change) >= config.ALERT_RUNPASS_CHANGE_PCT:
         direction = "more" if identity.pass_pct_change > 0 else "less"
         alerts.append(f"Passing {abs(identity.pass_pct_change):.0f}% {direction} than the scouting report.")
 
-    # Formation usage swings (across all formations)
     for c in formation_changes:
         if c.is_new and c.live_pct > 0:
             alerts.append(f"{c.formation} has appeared for the first time ({c.live_pct:.0f}% of live snaps).")
@@ -1187,7 +924,6 @@ def build_coach_alerts(
             direction = "increased" if c.change > 0 else "decreased"
             alerts.append(f"{c.formation} usage has {direction} {abs(c.change):.0f}%.")
 
-    # Per-formation pass tendency (only for the tracked top formations, confident)
     for fc in formation_comparisons:
         if not fc.confident:
             continue
@@ -1196,7 +932,6 @@ def build_coach_alerts(
         elif fc.pass_pct_change <= -config.ALERT_RUNPASS_CHANGE_PCT:
             alerts.append(f"They are running much more from {fc.formation} ({fc.live_run_pct:.0f}% run).")
 
-    # Play-level: new plays, dropped favorites, promoted plays
     for changes, label in ((run_changes, "run"), (pass_changes, "pass")):
         for c in changes:
             if c.is_new and c.live_count >= config.NEW_PLAY_MIN_LIVE_COUNT:
@@ -1211,7 +946,6 @@ def build_coach_alerts(
             if top_riser.live_pct == max((c.live_pct for c in changes), default=0):
                 alerts.append(f"{top_riser.play_name} has become their primary {label}.")
 
-    # Situational shifts (down & distance, then field position)
     for exp in down_distance_expectations:
         if not (exp.changed and exp.live_confident):
             continue
@@ -1235,13 +969,25 @@ def build_coach_alerts(
     return alerts
 
 
-# ---------------------------------------------------------------------------
-# Game Plan Match Score
-# ---------------------------------------------------------------------------
+def build_scout_fidelity_verdict(
+    identity: IdentityComparison,
+    formation_changes: List[FormationChange],
+    run_changes: List[PlayChange],
+    pass_changes: List[PlayChange],
+) -> str:
+    has_big_rp_shift = abs(identity.pass_pct_change) >= config.ALERT_RUNPASS_CHANGE_PCT
+    has_big_form_shift = any(abs(c.change) >= config.ALERT_FORMATION_CHANGE_PCT for c in formation_changes)
+    has_new_form = any(c.is_new and c.live_pct > 0 for c in formation_changes)
+
+    if has_big_rp_shift and (has_big_form_shift or has_new_form):
+        return "Completely different offense"
+    if has_big_rp_shift or has_big_form_shift or has_new_form:
+        return "Significant changes"
+    return "Following scout"
+
 
 @dataclass
 class GamePlanScore:
-    """The overall Game Plan Match Score and its components."""
     score: float
     band_label: str
     formation_component: float
@@ -1251,8 +997,6 @@ class GamePlanScore:
 
 
 def _distribution_similarity(scout_pcts: dict, live_pcts: dict) -> float:
-    """Total-variation-distance based similarity between two % distributions
-    (e.g. formation usage). Returns 0-100, where 100 means identical."""
     all_keys = set(scout_pcts) | set(live_pcts)
     if not all_keys:
         return 100.0
@@ -1260,12 +1004,11 @@ def _distribution_similarity(scout_pcts: dict, live_pcts: dict) -> float:
     total_variation = 0.5 * sum(
         abs(scout_pcts.get(k, 0.0) - live_pcts.get(k, 0.0)) for k in all_keys
     )
-    similarity = 100.0 - total_variation  # pcts are already 0-100 scale
+    similarity = 100.0 - total_variation
     return max(0.0, min(100.0, similarity))
 
 
 def _band_label(score: float) -> str:
-    """Looks up the Game Plan Match band label for a given score."""
     for lower_bound, label in config.GAME_PLAN_BANDS:
         if score >= lower_bound:
             return label
