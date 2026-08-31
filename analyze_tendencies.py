@@ -343,3 +343,6 @@ def apply_trend_formatting(ws: gspread.Worksheet, trend_types: List[str]) -> Non
     if formats:
         ws.batch_format(formats)
         print(f"Marked {len(formats)} trend rows.")
+
+if __name__ == "__main__":
+    main()  # Or whatever your primary entry function is named
