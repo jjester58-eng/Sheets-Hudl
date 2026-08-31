@@ -1,7 +1,7 @@
 """
 analyze_tendencies.py
 ----------------------
-Orchestrator for tendency analysis.
+Orchestrator for tendency analysis and live game statistics.
 """
 
 import sys
@@ -9,6 +9,7 @@ import analysis
 import config
 import reports
 import sheets
+import stats
 
 
 def main() -> None:
@@ -81,13 +82,14 @@ def _write_defense_report(spreadsheet, scout_df, scout_ready: bool, live_df, liv
     )
 
     formation_changes = analysis.compare_formations(scout_df, live_df) if scout_ready and live_ready else []
-    run_changes = analysis.compare_plays(scout_df, live_df, config.PLAY_TYPE_RUN) if scout_ready and live_ready else []
-    pass_changes = analysis.compare_plays(scout_df, live_df, config.PLAY_TYPE_PASS) if scout_ready and live_ready else []
 
+    # Deliberately omit run/pass play comparisons from DEF ANALYSIS.
+    # The defense report should focus on identity, formations, and full
+    # down/distance run/pass tendencies rather than top individual plays.
     coach_alerts = (
         analysis.build_coach_alerts(
             identity, formation_comparisons, formation_changes,
-            run_changes, pass_changes,
+            [], [],
             down_distance_expectations, field_zone_expectations,
         )
         if scout_ready and live_ready
@@ -95,7 +97,7 @@ def _write_defense_report(spreadsheet, scout_df, scout_ready: bool, live_df, liv
     )
 
     verdict = (
-        analysis.build_scout_fidelity_verdict(identity, formation_changes, run_changes, pass_changes)
+        analysis.build_scout_fidelity_verdict(identity, formation_changes, [], [])
         if scout_ready and live_ready
         else "Not enough data yet"
     )
@@ -157,13 +159,13 @@ def _write_offense_report(spreadsheet, off_live_df, off_ready: bool) -> None:
 def _write_stats_report(spreadsheet, off_live_df, off_ready: bool, live_df, live_ready: bool) -> None:
     print("Building Stats tab...")
 
-    qb_stats = analysis.build_qb_stats(off_live_df) if off_ready else analysis.QBStats(0, 0, 0.0, 0.0, 0, 0)
-    ball_carrier_stats = analysis.build_ball_carrier_stats(off_live_df) if off_ready else []
-    def_live_yards = analysis.build_play_type_yards(live_df) if live_ready else analysis.PlayTypeYards(0.0, 0.0)
+    # Stats are calculated from ODK with the explicit attribution rules in stats.py.
+    qb_stats = stats.build_qb_stats(off_live_df) if off_ready else analysis.QBStats(0, 0, 0.0, 0.0, 0, 0)
+    ball_carrier_stats = stats.build_ball_carrier_stats(off_live_df) if off_ready else []
+    def_live_yards = stats.build_def_live_yards(live_df) if live_ready else analysis.PlayTypeYards(0.0, 0.0)
 
-    # Calculate penalty stats
     penalty_count, penalty_yards = (
-        analysis.build_penalty_stats(off_live_df) if off_ready 
+        analysis.build_penalty_stats(off_live_df) if off_ready
         else (0, 0.0)
     )
 
