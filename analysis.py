@@ -1,4 +1,4 @@
- """
+"""
 analysis.py
 -----------
 All football calculations live here.
