@@ -7,24 +7,13 @@ Turns data structures into formatted sheet rows.
 from typing import List, Optional
 import config
 from analysis import (
-    FormationSummary,
-    PlayCallStat,
-    PlayProbability,
-    IdentityComparison,
-    FormationComparison,
-    SituationExpectation,
-    SituationSelfSummary,
-    ExplosiveComparison,
-    BiggestChanges,
-    GamePlanScore,
-    Summary,
-    PlayTypeYards,
-    BallCarrierStats,
-    QBStats,
+    FormationSummary, PlayCallStat, PlayProbability, IdentityComparison,
+    FormationComparison, SituationExpectation, SituationSelfSummary,
+    ExplosiveComparison, BiggestChanges, GamePlanScore, Summary,
+    PlayTypeYards, BallCarrierStats, QBStats,
 )
 
 Row = List[str]
-
 UP = "\u25b2"
 DOWN = "\u25bc"
 CHECK = "\u2713"
@@ -96,50 +85,25 @@ def build_quick_formations_section(comparisons: List[FormationComparison], top_n
         rows.append(["(no live formation data yet)"])
         rows.append(_blank_row())
         return rows
-
     rows.append(["Formation", "Snaps", "Run%", "Pass%", "Scout R%", "Scout P%", "Change"])
     for f in top:
-        rows.append([
-            f.formation,
-            str(f.live_count),
-            _pct(f.live_run_pct),
-            _pct(f.live_pass_pct),
-            _pct(f.scout_run_pct),
-            _pct(f.scout_pass_pct),
-            _arrow_change(f.change),
-        ])
+        rows.append([f.formation, str(f.live_count), _pct(f.live_run_pct), _pct(f.live_pass_pct), _pct(f.scout_run_pct), _pct(f.scout_pass_pct), _arrow_change(f.change)])
     rows.append(_blank_row())
     return rows
 
 
 def build_quick_down_distance_section(expectations: List[SituationExpectation]) -> List[Row]:
     rows: List[Row] = [_section_header("DOWN/DISTANCE")]
-    wanted = [
-        "1st & Long",
-        "2nd & Long",
-        "2nd & Medium",
-        "2nd & Short",
-        "3rd & Long",
-        "3rd & Medium",
-        "3rd & Short",
-    ]
+    wanted = ["1st & Long", "2nd & Long", "2nd & Medium", "2nd & Short", "3rd & Long", "3rd & Medium", "3rd & Short"]
     by_label = {e.label: e for e in expectations}
     found = [by_label[w] for w in wanted if w in by_label]
     if not found:
         rows.append(["(no down/distance data yet)"])
         rows.append(_blank_row())
         return rows
-
     rows.append(["Situation", "Live R%", "Live P%", "Scout R%", "Scout P%", "Change"])
     for e in found:
-        rows.append([
-            e.label,
-            _pct(e.live_run_pct),
-            _pct(e.live_pass_pct),
-            _pct(e.scout_run_pct),
-            _pct(e.scout_pass_pct),
-            _arrow_change(e.pass_pct_change),
-        ])
+        rows.append([e.label, _pct(e.live_run_pct), _pct(e.live_pass_pct), _pct(e.scout_run_pct), _pct(e.scout_pass_pct), _arrow_change(e.pass_pct_change)])
     rows.append(_blank_row())
     return rows
 
@@ -163,13 +127,7 @@ def build_quick_notable_section(alerts: List[str], max_items: int = 5) -> List[R
     return rows
 
 
-def build_quick_defense_report(
-    identity: IdentityComparison,
-    formation_comparisons: List[FormationComparison],
-    down_distance_expectations: List[SituationExpectation],
-    verdict: str,
-    notable_alerts: List[str],
-) -> List[Row]:
+def build_quick_defense_report(identity: IdentityComparison, formation_comparisons: List[FormationComparison], down_distance_expectations: List[SituationExpectation], verdict: str, notable_alerts: List[str]) -> List[Row]:
     rows: List[Row] = []
     rows += build_quick_runpass_section(identity)
     rows += build_quick_formations_section(formation_comparisons)
@@ -199,17 +157,9 @@ def build_offense_formations_section(formations: List[FormationSummary]) -> List
         rows.append(["(no formation data)"])
         rows.append(_blank_row())
         return rows
-
     rows.append(["Formation", "Usage", "R%", "P%", "Top Runs", "Top Pass"])
     for f in formations:
-        rows.append([
-            f.formation,
-            _pct(f.usage_pct),
-            _pct(f.run_pct),
-            _pct(f.pass_pct),
-            ", ".join(f.top_run_plays) or "—",
-            ", ".join(f.top_pass_plays) or "—",
-        ])
+        rows.append([f.formation, _pct(f.usage_pct), _pct(f.run_pct), _pct(f.pass_pct), ", ".join(f.top_run_plays) or "—", ", ".join(f.top_pass_plays) or "—"])
     rows.append(_blank_row())
     return rows
 
@@ -220,7 +170,6 @@ def build_offense_top_plays_section(title: str, plays: List[PlayCallStat]) -> Li
         rows.append(["(none yet)"])
         rows.append(_blank_row())
         return rows
-
     rows.append(["Play", "Calls", "Avg Gain", "Explosive"])
     for p in plays:
         rows.append([p.play_name, str(p.calls), f"{p.avg_gain:.1f}", str(p.explosive_count)])
@@ -228,26 +177,16 @@ def build_offense_top_plays_section(title: str, plays: List[PlayCallStat]) -> Li
     return rows
 
 
-def build_offense_situation_section(
-    title: str,
-    situations: List[SituationSelfSummary],
-    empty_message: str,
-) -> List[Row]:
+def build_offense_situation_section(title: str, situations: List[SituationSelfSummary], empty_message: str) -> List[Row]:
     rows: List[Row] = [_section_header(title)]
     if not situations:
         rows.append([empty_message])
         rows.append(_blank_row())
         return rows
-
     rows.append(["Situation", "Plays", "R/P", "Top Plays"])
     for s in situations:
         play_count_cell = str(s.play_count) if s.confident else f"{s.play_count} (low)"
-        rows.append([
-            s.label,
-            play_count_cell,
-            _run_pass_cell(s.run_pct, s.pass_pct, s.play_count),
-            _expected_play_names(s.top_plays),
-        ])
+        rows.append([s.label, play_count_cell, _run_pass_cell(s.run_pct, s.pass_pct, s.play_count), _expected_play_names(s.top_plays)])
     rows.append(_blank_row())
     return rows
 
@@ -260,7 +199,6 @@ def build_offense_explosive_section(explosive: dict) -> List[Row]:
         rows.append(["(none yet)"])
         rows.append(_blank_row())
         return rows
-
     rows.append(["Play", "Type", "Calls", "Avg Gain", "Explosive"])
     for p in runs:
         rows.append([p.play_name, "Run", str(p.calls), f"{p.avg_gain:.1f}", str(p.explosive_count)])
@@ -270,35 +208,16 @@ def build_offense_explosive_section(explosive: dict) -> List[Row]:
     return rows
 
 
-def build_offense_report(
-    summary: Summary,
-    formations: List[FormationSummary],
-    top_runs: List[PlayCallStat],
-    top_passes: List[PlayCallStat],
-    down_distance_summary: List[SituationSelfSummary],
-    field_zone_summary: List[SituationSelfSummary],
-    field_position_available: bool,
-    explosive: dict,
-) -> List[Row]:
+def build_offense_report(summary: Summary, formations: List[FormationSummary], top_runs: List[PlayCallStat], top_passes: List[PlayCallStat], down_distance_summary: List[SituationSelfSummary], field_zone_summary: List[SituationSelfSummary], field_position_available: bool, explosive: dict) -> List[Row]:
     rows: List[Row] = []
-
     rows += build_offense_identity_section(summary)
     rows += build_offense_formations_section(formations)
     rows += build_offense_top_plays_section("TOP RUN PLAYS", top_runs)
     rows += build_offense_top_plays_section("TOP PASS PLAYS", top_passes)
-
-    rows += build_offense_situation_section(
-        "DOWN & DISTANCE (SELF)", down_distance_summary,
-        "(no down/distance data)",
-    )
-
-    field_empty = (
-        "(no field pos data — add FIELD POS column)"
-        if not field_position_available else "(no field position data)"
-    )
+    rows += build_offense_situation_section("DOWN & DISTANCE (SELF)", down_distance_summary, "(no down/distance data)")
+    field_empty = "(no field pos data — add FIELD POS column)" if not field_position_available else "(no field position data)"
     rows += build_offense_situation_section("FIELD POSITION (SELF)", field_zone_summary, field_empty)
     rows += build_offense_explosive_section(explosive)
-
     return rows
 
 
@@ -309,14 +228,7 @@ def build_offense_report(
 def build_stats_qb_section(qb: QBStats) -> List[Row]:
     rows: List[Row] = [_section_header("QUARTERBACK")]
     rows.append(["Attempts", "Comp", "Comp%", "Pass Yds", "Pass TD", "INT"])
-    rows.append([
-        str(qb.attempts),
-        str(qb.completions),
-        _pct(qb.comp_pct),
-        _yards(qb.pass_yards),
-        str(qb.pass_td),
-        str(qb.interceptions),
-    ])
+    rows.append([str(qb.attempts), str(qb.completions), _pct(qb.comp_pct), _yards(qb.pass_yards), str(qb.pass_td), str(qb.interceptions)])
     rows.append(_blank_row())
     return rows
 
@@ -330,9 +242,10 @@ def build_stats_ball_carrier_section(stats: List[BallCarrierStats]) -> List[Row]
 
     rows.append([
         "Player", "Car", "Rush Yds", "Avg/Car", "Rush TD",
-        "Rec", "Rec Yds", "Rec TD", "Fum",
+        "Rec", "Rec Yds", "Total Yds", "Rec TD", "Fum",
     ])
     for s in stats:
+        total_yards = float(s.rush_yards) + float(s.rec_yards)
         rows.append([
             s.ball_carrier,
             str(s.carries),
@@ -341,6 +254,7 @@ def build_stats_ball_carrier_section(stats: List[BallCarrierStats]) -> List[Row]
             str(s.rush_td),
             str(s.receptions),
             _yards(s.rec_yards),
+            _yards(total_yards),
             str(s.rec_td),
             str(s.fumbles),
         ])
@@ -360,21 +274,12 @@ def build_stats_def_yards_section(live_yards: PlayTypeYards) -> List[Row]:
 def build_stats_penalties_section(penalty_count: int, penalty_yards: float) -> List[Row]:
     rows: List[Row] = [_section_header("PENALTIES")]
     rows.append(["Total Penalties", "Penalty Yards"])
-    rows.append([
-        str(penalty_count),
-        _yards(penalty_yards),
-    ])
+    rows.append([str(penalty_count), _yards(penalty_yards)])
     rows.append(_blank_row())
     return rows
 
 
-def build_stats_report(
-    qb_stats: QBStats,
-    ball_carrier_stats: List[BallCarrierStats],
-    def_live_yards: PlayTypeYards,
-    penalty_count: int = 0,
-    penalty_yards: float = 0.0,
-) -> List[Row]:
+def build_stats_report(qb_stats: QBStats, ball_carrier_stats: List[BallCarrierStats], def_live_yards: PlayTypeYards, penalty_count: int = 0, penalty_yards: float = 0.0) -> List[Row]:
     rows: List[Row] = []
     rows += build_stats_qb_section(qb_stats)
     rows += build_stats_ball_carrier_section(ball_carrier_stats)
