@@ -16,7 +16,7 @@ ODK_SHEET_NAME: str = "ODK"                 # single source of truth for live da
 SCOUT_SHEET_NAME: str = "WEEKLY DATA"       # 3+ weeks of scouted opponent film
 OUTPUT_SHEET_NAME: str = "DEF ANALYSIS"     # defense report (opponent scout vs live)
 OFF_OUTPUT_SHEET_NAME: str = "OFF ANALYSIS"  # offense report (self tendencies, no scout side)
-STATS_OUTPUT_SHEET_NAME: str = "Stats"      # box score: QB line, ball carriers, def live yards
+STATS_OUTPUT_SHEET_NAME: str = "Stats"      # box score: QB line, ball carriers, def live yards, penalties
 
 # ---------------------------------------------------------------------------
 # Column names as they appear in the ODK sheet
@@ -52,7 +52,7 @@ PLAY_TYPE_RUN: str = "Run"
 PLAY_TYPE_PASS: str = "Pass"
 
 # ---------------------------------------------------------------------------
-# Result values (COL_RESULT) - used for ball-carrier / QB stat attribution
+# Result values (COL_RESULT) - used for ball-carrier / QB / Penalty stat attribution
 # ---------------------------------------------------------------------------
 RESULT_COMPLETE: str = "Complete"
 RESULT_COMPLETE_TD: str = "Complete, TD"
@@ -61,6 +61,7 @@ RESULT_INTERCEPTION: str = "Interception"
 RESULT_FUMBLE: str = "Fumble"
 RESULT_RUSH: str = "Rush"
 RESULT_RUSH_TD: str = "Rush, TD"
+RESULT_PENALTY: str = "Penalty"
 
 # ---------------------------------------------------------------------------
 # Down & distance buckets
