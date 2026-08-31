@@ -21,6 +21,7 @@ from analysis import (
     PlayTypeYards,
     BallCarrierStats,
     QBStats,
+    PenaltyStats,
 )
 
 Row = List[str]
@@ -357,13 +358,29 @@ def build_stats_def_yards_section(live_yards: PlayTypeYards) -> List[Row]:
     return rows
 
 
+def build_stats_penalties_section(penalties: PenaltyStats) -> List[Row]:
+    rows: List[Row] = [_section_header("OFF & DEF PENALTIES")]
+    rows.append(["Unit", "Count", "Yards"])
+    rows.append(["Offense", str(penalties.offense_count), _yards(penalties.offense_yards)])
+    rows.append(["Defense", str(penalties.defense_count), _yards(penalties.defense_yards)])
+    rows.append([
+        "Total",
+        str(penalties.offense_count + penalties.defense_count),
+        _yards(penalties.offense_yards + penalties.defense_yards),
+    ])
+    rows.append(_blank_row())
+    return rows
+
+
 def build_stats_report(
     qb_stats: QBStats,
     ball_carrier_stats: List[BallCarrierStats],
     def_live_yards: PlayTypeYards,
+    penalties: PenaltyStats,
 ) -> List[Row]:
     rows: List[Row] = []
     rows += build_stats_qb_section(qb_stats)
     rows += build_stats_ball_carrier_section(ball_carrier_stats)
     rows += build_stats_def_yards_section(def_live_yards)
+    rows += build_stats_penalties_section(penalties)
     return rows
