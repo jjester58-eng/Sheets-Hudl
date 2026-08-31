@@ -3,9 +3,8 @@ stats.py
 --------
 Box-score/stat attribution from the ODK live sheet.
 
-ODK has no separate QB/Passer column. Passing attribution is therefore
-inferred from PLAY TYPE + Result, while BALL CARRIER identifies the receiver
-or rusher. Fumbles are credited to BALL CARRIER but are never QB pass attempts.
+ODK has no separate QB/Passer column. Passing attribution is inferred from
+PLAY TYPE + Result, while BALL CARRIER identifies the receiver or rusher.
 """
 
 import pandas as pd
@@ -23,16 +22,15 @@ def _result(value) -> str:
 def _clean(df: pd.DataFrame) -> pd.DataFrame:
     if df.empty or config.COL_RESULT not in df.columns:
         return df.copy()
-    result = df[config.COL_RESULT].astype(str).str.lower()
+    result = df[config.COL_RESULT].astype(str).str.strip().str.lower()
     return df[~result.str.contains("penalty", na=False)].copy()
 
 
 def build_qb_stats(df: pd.DataFrame) -> QBStats:
     """Infer QB passing stats from PASS + Result.
 
-    Attempts are ONLY Complete, Complete TD, Incomplete, and Interception.
-    Fumbles are deliberately excluded because the ODK fumble record belongs
-    to BALL CARRIER and is not a QB passing attempt.
+    Attempts are Complete, Complete TD, Incomplete, and Interception.
+    Fumbles are never QB attempts.
     """
     clean = _clean(df)
     required = {config.COL_PLAY_TYPE, config.COL_RESULT, config.COL_GAIN_LOSS}
@@ -45,7 +43,6 @@ def build_qb_stats(df: pd.DataFrame) -> QBStats:
 
     result = passes[config.COL_RESULT].map(_result)
     yards = pd.to_numeric(passes[config.COL_GAIN_LOSS], errors="coerce").fillna(0)
-
     complete = _result(config.RESULT_COMPLETE)
     complete_td = _result(config.RESULT_COMPLETE_TD)
     incomplete = _result(config.RESULT_INCOMPLETE)
@@ -53,7 +50,6 @@ def build_qb_stats(df: pd.DataFrame) -> QBStats:
 
     attempt_mask = result.isin({complete, complete_td, incomplete, interception})
     completion_mask = result.isin({complete, complete_td})
-
     attempts = int(attempt_mask.sum())
     completions = int(completion_mask.sum())
     pass_yards = float(yards[completion_mask].sum())
@@ -65,14 +61,17 @@ def build_qb_stats(df: pd.DataFrame) -> QBStats:
 
 
 def build_ball_carrier_stats(df: pd.DataFrame) -> list[BallCarrierStats]:
-    """Build rushing/receiving/fumble stats from BALL CARRIER.
+    """Build rushing, receiving and fumble stats from BALL CARRIER.
 
-    Run + Rush/Rush TD = carry and rushing yards.
-    Pass + Complete/Complete TD = reception and receiving yards.
-    Rush TD goes to the rusher; Complete TD goes to both QB and receiver.
-    Fumble always goes to BALL CARRIER, regardless of Run/Pass, but never adds
-    receiving yards or QB attempts. A rushing fumble is a carry with zero
-    recorded yards when GN/LS is blank.
+    IMPORTANT FUMBLE RULE:
+    Every ODK Fumble with a BALL CARRIER is counted as ONE carry, regardless
+    of whether PLAY TYPE says RUN or PASS. Fumbles have zero rushing yards
+    and zero receiving yards. A fumble is never a QB attempt.
+
+    Normal plays:
+      RUN + Rush/Rush TD -> carry/rushing yards; Rush TD -> rushing TD.
+      PASS + Complete/Complete TD -> reception/receiving yards;
+          Complete TD -> receiving TD.
     """
     clean = _clean(df)
     required = {
@@ -85,15 +84,19 @@ def build_ball_carrier_stats(df: pd.DataFrame) -> list[BallCarrierStats]:
         return []
 
     work = clean[list(required)].copy()
-    work[config.COL_BALL_CARRIER] = work[config.COL_BALL_CARRIER].fillna("").astype(str).str.strip()
+    work[config.COL_BALL_CARRIER] = (
+        work[config.COL_BALL_CARRIER].fillna("").astype(str).str.strip()
+    )
     work = work[work[config.COL_BALL_CARRIER] != ""]
     if work.empty:
         return []
 
-    result = work[config.COL_RESULT].map(_result)
-    work["_result"] = result
+    work["_result"] = work[config.COL_RESULT].map(_result)
+    work["_play_type"] = work[config.COL_PLAY_TYPE].astype(str).str.strip().str.lower()
     work["_yards"] = pd.to_numeric(work[config.COL_GAIN_LOSS], errors="coerce").fillna(0)
 
+    run_type = str(config.PLAY_TYPE_RUN).strip().lower()
+    pass_type = str(config.PLAY_TYPE_PASS).strip().lower()
     rush = _result(config.RESULT_RUSH)
     rush_td = _result(config.RESULT_RUSH_TD)
     complete = _result(config.RESULT_COMPLETE)
@@ -102,20 +105,28 @@ def build_ball_carrier_stats(df: pd.DataFrame) -> list[BallCarrierStats]:
 
     players = []
     for carrier, group in work.groupby(config.COL_BALL_CARRIER, sort=True):
-        is_run = group[config.COL_PLAY_TYPE] == config.PLAY_TYPE_RUN
-        is_pass = group[config.COL_PLAY_TYPE] == config.PLAY_TYPE_PASS
         res = group["_result"]
+        play_type = group["_play_type"]
+        is_run = play_type == run_type
+        is_pass = play_type == pass_type
+        is_fumble = res == fumble
 
-        # A rushing fumble is still a rushing attempt. A passing fumble is not.
-        carries = int((is_run & res.isin({rush, rush_td, fumble})).sum())
-        rush_yards = float(group.loc[is_run & res.isin({rush, rush_td}), "_yards"].sum())
+        # EVERY fumble with a named BALL CARRIER is a carry.
+        # This intentionally does not depend on PLAY TYPE.
+        carries = int((is_run & res.isin({rush, rush_td})).sum() + is_fumble.sum())
+
+        # Fumble yards are always zero, even if GN/LS happens to contain a value.
+        rush_yards = float(
+            group.loc[is_run & res.isin({rush, rush_td}), "_yards"].sum()
+        )
         rush_tds = int((is_run & (res == rush_td)).sum())
 
         receptions = int((is_pass & res.isin({complete, complete_td})).sum())
-        rec_yards = float(group.loc[is_pass & res.isin({complete, complete_td}), "_yards"].sum())
+        rec_yards = float(
+            group.loc[is_pass & res.isin({complete, complete_td}), "_yards"].sum()
+        )
         rec_tds = int((is_pass & (res == complete_td)).sum())
-
-        fumbles = int((res == fumble).sum())
+        fumbles = int(is_fumble.sum())
 
         players.append(BallCarrierStats(
             ball_carrier=str(carrier),
@@ -133,10 +144,7 @@ def build_ball_carrier_stats(df: pd.DataFrame) -> list[BallCarrierStats]:
 
 
 def build_def_live_yards(df: pd.DataFrame) -> PlayTypeYards:
-    """Opponent live offensive yards recorded on D rows.
-
-    Fumbles have no GN/LS by design and therefore contribute zero yards.
-    """
+    """Opponent live offensive yards on D rows; fumbles add zero yards."""
     clean = _clean(df)
     required = {config.COL_PLAY_TYPE, config.COL_GAIN_LOSS}
     if clean.empty or not required.issubset(clean.columns):
