@@ -20,6 +20,7 @@ ODK_SHEET_NAME: str = "ODK"                 # single source of truth for live da
 SCOUT_SHEET_NAME: str = "WEEKLY DATA"       # 3+ weeks of scouted opponent film
 OUTPUT_SHEET_NAME: str = "DEF ANALYSIS"     # defense report (opponent scout vs live)
 OFF_OUTPUT_SHEET_NAME: str = "OFF ANALYSIS"  # offense report (self tendencies, no scout side)
+STATS_OUTPUT_SHEET_NAME: str = "Stats"      # box score: QB line, ball carriers, def live yards
 
 # ---------------------------------------------------------------------------
 # Column names as they appear in the ODK sheet
@@ -55,6 +56,24 @@ SIDE_OFFENSE: str = "O"
 # Values expected in COL_PLAY_TYPE
 PLAY_TYPE_RUN: str = "Run"
 PLAY_TYPE_PASS: str = "Pass"
+
+# ---------------------------------------------------------------------------
+# Result values (COL_RESULT) - used for ball-carrier / QB stat attribution
+# ---------------------------------------------------------------------------
+# There's no separate QB/passer column in ODK. On a Run row BALL CARRIER is
+# the rusher; on a Pass row it's the receiver. Result decides which bucket a
+# row counts toward. Fumbles carry no GN/LS value and are never counted as a
+# QB attempt or interception - they're tracked per BALL CARRIER only.
+# The sheet's Result dropdown has additional values beyond these (not
+# significant to these stats); anything not listed here is simply ignored
+# by the stat-building functions rather than raising an error.
+RESULT_COMPLETE: str = "Complete"
+RESULT_COMPLETE_TD: str = "Complete, TD"
+RESULT_INCOMPLETE: str = "Incomplete"
+RESULT_INTERCEPTION: str = "Interception"
+RESULT_FUMBLE: str = "Fumble"
+RESULT_RUSH: str = "Rush"
+RESULT_RUSH_TD: str = "Rush, TD"
 
 # ---------------------------------------------------------------------------
 # Down & distance buckets
