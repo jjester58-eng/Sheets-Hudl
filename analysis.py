@@ -41,11 +41,36 @@ class PlayTypeYards:
 
 
 @dataclass
-class BallCarrierYards:
-    """One offensive ball carrier's rushing and receiving yardage."""
+class BallCarrierStats:
+    """One offensive player's carries, receptions, and touchdowns, derived
+    from BALL CARRIER + PLAY TYPE + Result. On a Run row BALL CARRIER is the
+    rusher; on a Pass row it's the receiver - Result decides which bucket
+    (Rush/Rush TD vs Complete/Complete TD) a row counts toward. Fumbles are
+    tracked separately per carrier regardless of play type, since a fumble
+    row has no GN/LS value to add to yardage."""
     ball_carrier: str
-    rushing_yards: float
-    receiving_yards: float
+    carries: int
+    rush_yards: float
+    yards_per_carry: float
+    rush_td: int
+    receptions: int
+    rec_yards: float
+    rec_td: int
+    fumbles: int
+
+
+@dataclass
+class QBStats:
+    """Team-wide passing stats. There's no QB/passer column in ODK - BALL
+    CARRIER holds the receiver's name on pass plays - so these are computed
+    from Result alone and reported as one team total rather than per-player.
+    Interceptions count against this; fumbles never do."""
+    attempts: int
+    completions: int
+    comp_pct: float
+    pass_yards: float
+    pass_td: int
+    interceptions: int
 
 
 @dataclass
@@ -103,6 +128,16 @@ def _normalize_play_type(value):
     if text in _PASS_TOKENS:
         return config.PLAY_TYPE_PASS
     return str(value).strip()
+
+
+def _normalize_result(value) -> str:
+    """Lowercases and strips a raw Result cell for tolerant comparison
+    against the config.RESULT_* constants. Values not recognized by the
+    stat-building functions below are simply not matched - they don't
+    raise, they just don't count toward anything."""
+    if pd.isna(value):
+        return ""
+    return str(value).strip().lower()
 
 
 def add_situational_columns(df: pd.DataFrame) -> pd.DataFrame:
@@ -251,16 +286,26 @@ def build_play_type_yards(df: pd.DataFrame) -> PlayTypeYards:
     return PlayTypeYards(rushing_yards, passing_yards)
 
 
-def build_ball_carrier_yards(df: pd.DataFrame) -> List[BallCarrierYards]:
-    """Groups offensive ODK plays by BALL CARRIER and splits GN/LS by type.
+def build_ball_carrier_stats(df: pd.DataFrame) -> List[BallCarrierStats]:
+    """Groups offensive ODK plays by BALL CARRIER and derives carries,
+    rushing yards, rushing TDs, receptions, receiving yards, receiving TDs,
+    and fumbles from PLAY TYPE + Result.
 
-    A Run is rushing yardage and a Pass is receiving yardage. Blank ball
-    carriers are deliberately excluded so incomplete entries do not create a
+    Carries  = Run rows with Result in {Rush, Rush, TD}
+    Rush TD  = Run rows with Result == Rush, TD
+    Receptions = Pass rows with Result in {Complete, Complete, TD}
+    Rec TD   = Pass rows with Result == Complete, TD
+    Fumbles  = any row (Run or Pass) with Result == Fumble, credited to
+               BALL CARRIER regardless of play type - these carry no GN/LS
+               value, so they never add to carries/receptions/yards.
+
+    Blank ball carriers are excluded so incomplete entries don't create a
     fake player row.
     """
     required = {
         config.COL_BALL_CARRIER,
         config.COL_PLAY_TYPE,
+        config.COL_RESULT,
         config.COL_GAIN_LOSS,
     }
     if df.empty or not required.issubset(df.columns):
@@ -269,6 +314,7 @@ def build_ball_carrier_yards(df: pd.DataFrame) -> List[BallCarrierYards]:
     work = df.loc[:, [
         config.COL_BALL_CARRIER,
         config.COL_PLAY_TYPE,
+        config.COL_RESULT,
         config.COL_GAIN_LOSS,
     ]].copy()
     work[config.COL_BALL_CARRIER] = (
@@ -278,34 +324,93 @@ def build_ball_carrier_yards(df: pd.DataFrame) -> List[BallCarrierYards]:
     if work.empty:
         return []
 
-    work["_yards"] = pd.to_numeric(
-        work[config.COL_GAIN_LOSS], errors="coerce"
-    ).fillna(0)
+    work["_result"] = work[config.COL_RESULT].map(_normalize_result)
+    work["_yards"] = pd.to_numeric(work[config.COL_GAIN_LOSS], errors="coerce").fillna(0)
+
+    rush_result = _normalize_result(config.RESULT_RUSH)
+    rush_td_result = _normalize_result(config.RESULT_RUSH_TD)
+    complete_result = _normalize_result(config.RESULT_COMPLETE)
+    complete_td_result = _normalize_result(config.RESULT_COMPLETE_TD)
+    fumble_result = _normalize_result(config.RESULT_FUMBLE)
 
     players = []
     for ball_carrier, group in work.groupby(config.COL_BALL_CARRIER, sort=True):
-        rushing_yards = float(
-            group.loc[
-                group[config.COL_PLAY_TYPE] == config.PLAY_TYPE_RUN, "_yards"
-            ].sum()
-        )
-        receiving_yards = float(
-            group.loc[
-                group[config.COL_PLAY_TYPE] == config.PLAY_TYPE_PASS, "_yards"
-            ].sum()
-        )
-        players.append(BallCarrierYards(
+        is_run = group[config.COL_PLAY_TYPE] == config.PLAY_TYPE_RUN
+        is_pass = group[config.COL_PLAY_TYPE] == config.PLAY_TYPE_PASS
+
+        rush_mask = is_run & group["_result"].isin({rush_result, rush_td_result})
+        carries = int(rush_mask.sum())
+        rush_yards = float(group.loc[rush_mask, "_yards"].sum())
+        rush_td = int((is_run & (group["_result"] == rush_td_result)).sum())
+
+        rec_mask = is_pass & group["_result"].isin({complete_result, complete_td_result})
+        receptions = int(rec_mask.sum())
+        rec_yards = float(group.loc[rec_mask, "_yards"].sum())
+        rec_td = int((is_pass & (group["_result"] == complete_td_result)).sum())
+
+        fumbles = int((group["_result"] == fumble_result).sum())
+
+        players.append(BallCarrierStats(
             ball_carrier=ball_carrier,
-            rushing_yards=rushing_yards,
-            receiving_yards=receiving_yards,
+            carries=carries,
+            rush_yards=rush_yards,
+            yards_per_carry=round(rush_yards / carries, 1) if carries else 0.0,
+            rush_td=rush_td,
+            receptions=receptions,
+            rec_yards=rec_yards,
+            rec_td=rec_td,
+            fumbles=fumbles,
         ))
 
     return sorted(
         players,
-        key=lambda player: (
-            -(player.rushing_yards + player.receiving_yards),
-            player.ball_carrier,
-        ),
+        key=lambda p: (-(p.rush_yards + p.rec_yards), p.ball_carrier),
+    )
+
+
+def build_qb_stats(df: pd.DataFrame) -> QBStats:
+    """Team-wide passing line derived from Result on every Pass-type row.
+
+    Attempts = Complete, Complete TD, Incomplete, or Interception.
+    A Fumble row is never counted as an attempt and never credited as an
+    interception - fumbles aren't a QB stat, per the coach's rule.
+    Pass yards only accrue on completions (Complete / Complete TD).
+    """
+    required = {config.COL_PLAY_TYPE, config.COL_RESULT, config.COL_GAIN_LOSS}
+    if df.empty or not required.issubset(df.columns):
+        return QBStats(0, 0, 0.0, 0.0, 0, 0)
+
+    pass_df = df[df[config.COL_PLAY_TYPE] == config.PLAY_TYPE_PASS]
+    if pass_df.empty:
+        return QBStats(0, 0, 0.0, 0.0, 0, 0)
+
+    result = pass_df[config.COL_RESULT].map(_normalize_result)
+    yards = pd.to_numeric(pass_df[config.COL_GAIN_LOSS], errors="coerce").fillna(0)
+
+    complete_result = _normalize_result(config.RESULT_COMPLETE)
+    complete_td_result = _normalize_result(config.RESULT_COMPLETE_TD)
+    incomplete_result = _normalize_result(config.RESULT_INCOMPLETE)
+    interception_result = _normalize_result(config.RESULT_INTERCEPTION)
+
+    attempt_values = {complete_result, complete_td_result, incomplete_result, interception_result}
+    is_attempt = result.isin(attempt_values)
+    attempts = int(is_attempt.sum())
+
+    is_complete = result.isin({complete_result, complete_td_result})
+    completions = int(is_complete.sum())
+    pass_yards = float(yards[is_complete].sum())
+    pass_td = int((result == complete_td_result).sum())
+    interceptions = int((result == interception_result).sum())
+
+    comp_pct = round(completions / attempts * 100, 1) if attempts else 0.0
+
+    return QBStats(
+        attempts=attempts,
+        completions=completions,
+        comp_pct=comp_pct,
+        pass_yards=pass_yards,
+        pass_td=pass_td,
+        interceptions=interceptions,
     )
 
 
@@ -1164,319 +1269,3 @@ def _band_label(score: float) -> str:
     for lower_bound, label in config.GAME_PLAN_BANDS:
         if score >= lower_bound:
             return label
-    return config.GAME_PLAN_BANDS[-1][1]
-
-
-def compute_game_plan_score(
-    formation_changes: List[FormationChange],
-    scout_summary: Summary,
-    live_summary: Summary,
-    scout_top_runs: List[PlayCallStat],
-    scout_top_passes: List[PlayCallStat],
-    live_top_runs: List[PlayCallStat],
-    live_top_passes: List[PlayCallStat],
-    down_distance_expectations: List[SituationExpectation],
-) -> GamePlanScore:
-    """Computes the weighted Game Plan Match Score:
-        40% Formation Usage similarity
-        20% Run/Pass Ratio similarity
-        20% Top Plays overlap (top 3 run + top 3 pass, scout vs live)
-        20% Down & Distance tendency similarity
-
-    Each component is 0-100; the final score is their weighted sum.
-    """
-    scout_formation_pcts = {c.formation: c.scout_pct for c in formation_changes}
-    live_formation_pcts = {c.formation: c.live_pct for c in formation_changes}
-    formation_component = _distribution_similarity(scout_formation_pcts, live_formation_pcts)
-
-    runpass_component = max(0.0, 100.0 - abs(live_summary.pass_pct - scout_summary.pass_pct))
-
-    def _overlap_pct(scout_top, live_top):
-        scout_names = {s.play_name for s in scout_top}
-        live_names = {s.play_name for s in live_top}
-        if not scout_names:
-            return 100.0  # nothing to compare against - treat as neutral
-        return len(scout_names & live_names) / len(scout_names) * 100.0
-
-    run_overlap = _overlap_pct(scout_top_runs, live_top_runs)
-    pass_overlap = _overlap_pct(scout_top_passes, live_top_passes)
-    top_plays_component = (run_overlap + pass_overlap) / 2.0
-
-    comparable = [e for e in down_distance_expectations if e.live_count > 0]
-    if comparable:
-        avg_deviation = sum(abs(e.pass_pct_change) for e in comparable) / len(comparable)
-        down_distance_component = max(0.0, 100.0 - avg_deviation)
-    else:
-        down_distance_component = 100.0  # no comparable buckets yet - neutral
-
-    score = (
-        config.GAME_PLAN_WEIGHT_FORMATION * formation_component
-        + config.GAME_PLAN_WEIGHT_RUNPASS * runpass_component
-        + config.GAME_PLAN_WEIGHT_TOP_PLAYS * top_plays_component
-        + config.GAME_PLAN_WEIGHT_DOWN_DISTANCE * down_distance_component
-    )
-    score = round(max(0.0, min(100.0, score)), 1)
-
-    return GamePlanScore(
-        score=score,
-        band_label=_band_label(score),
-        formation_component=round(formation_component, 1),
-        runpass_component=round(runpass_component, 1),
-        top_plays_component=round(top_plays_component, 1),
-        down_distance_component=round(down_distance_component, 1),
-    )
-
-
-# ---------------------------------------------------------------------------
-# Standalone defensive Run/Pass count (used by the test suite; not part of
-# the main report pipeline, which uses _run_pass_split on the pre-filtered
-# live_df instead). Kept for backward compatibility with existing tests -
-# do not remove without also removing/updating those tests.
-# ---------------------------------------------------------------------------
-
-@dataclass
-class DefPlayTypeAnalysis:
-    total_defensive_plays: int
-    run_count: int
-    run_pct: float
-    pass_count: int
-    pass_pct: float
-
-
-def analyze_def_play_types(df: pd.DataFrame) -> DefPlayTypeAnalysis:
-    """Filters a raw ODK-shaped DataFrame to rows where the side column
-    contains 'D' (defensive plays) and evaluates the play-type column for
-    Run vs Pass breakdowns. Tolerant of the column being at its canonical
-    name/position or at the raw B/H spreadsheet positions."""
-    if df.empty:
-        return DefPlayTypeAnalysis(0, 0, 0.0, 0, 0.0)
-
-    col_odk = config.COL_SIDE if config.COL_SIDE in df.columns else df.columns[1]
-    col_play_type = config.COL_PLAY_TYPE if config.COL_PLAY_TYPE in df.columns else df.columns[7]
-
-    is_def = df[col_odk].astype(str).str.upper().str.contains("D", na=False)
-    def_df = df[is_def]
-
-    if def_df.empty:
-        return DefPlayTypeAnalysis(0, 0, 0.0, 0, 0.0)
-
-    normalized_types = def_df[col_play_type].map(_normalize_play_type).astype(str).str.upper()
-
-    run_count = int((normalized_types == config.PLAY_TYPE_RUN.upper()).sum())
-    pass_count = int((normalized_types == config.PLAY_TYPE_PASS.upper()).sum())
-    total_plays = run_count + pass_count
-
-    run_pct = round((run_count / total_plays * 100), 1) if total_plays > 0 else 0.0
-    pass_pct = round((pass_count / total_plays * 100), 1) if total_plays > 0 else 0.0
-
-    return DefPlayTypeAnalysis(
-        total_defensive_plays=total_plays,
-        run_count=run_count,
-        run_pct=run_pct,
-        pass_count=pass_count,
-        pass_pct=pass_pct,
-    )
-
-
-# ---------------------------------------------------------------------------
-# Offense efficiency tables (run/pass/red zone/3rd down), grouped by
-# formation + play call. "Positive" run/pass efficiency answers "does this
-# play work," which is a different question from Top Plays' "how often do
-# we call it."
-# ---------------------------------------------------------------------------
-
-@dataclass
-class FormationPlayEfficiency:
-    """One formation+play combo's success rate against a gain threshold."""
-    formation: str
-    play_name: str
-    attempts: int
-    successes: int
-    success_rate: float
-    avg_gain: float
-
-
-@dataclass
-class FormationPlayCount:
-    """One formation+play combo's raw count - used for explosive-play
-    tables where there's no attempts/rate, just how many times it happened."""
-    formation: str
-    play_name: str
-    count: int
-
-
-def _formation_play_groups(df: pd.DataFrame):
-    """Yields (formation, play_name, group_df) for every formation+play
-    combo present. Empty/missing-column input yields nothing."""
-    if (df.empty or config.COL_FORMATION not in df.columns
-            or config.COL_PLAY_CALL not in df.columns or config.COL_GAIN_LOSS not in df.columns):
-        return
-    for (formation, play_name), group in df.groupby([config.COL_FORMATION, config.COL_PLAY_CALL]):
-        yield formation, play_name, group
-
-
-def _formation_play_efficiency(df: pd.DataFrame, success_gain_min: float) -> List[FormationPlayEfficiency]:
-    """Success = gain >= success_gain_min. Sorted by most successes, then
-    most attempts, so the plays actually worth calling float to the top."""
-    results = []
-    for formation, play_name, group in _formation_play_groups(df):
-        gains = group[config.COL_GAIN_LOSS]
-        attempts = len(group)
-        successes = int((gains >= success_gain_min).sum())
-        results.append(FormationPlayEfficiency(
-            formation=formation,
-            play_name=play_name,
-            attempts=attempts,
-            successes=successes,
-            success_rate=round(successes / attempts * 100, 1) if attempts else 0.0,
-            avg_gain=round(gains.mean(), 1) if attempts else 0.0,
-        ))
-    return sorted(results, key=lambda r: (-r.successes, -r.attempts))
-
-
-def build_run_efficiency(df: pd.DataFrame) -> List[FormationPlayEfficiency]:
-    """Run plays only, success = gain >= POSITIVE_RUN_GAIN_THRESHOLD."""
-    if config.COL_PLAY_TYPE not in df.columns:
-        return []
-    return _formation_play_efficiency(
-        df[df[config.COL_PLAY_TYPE] == config.PLAY_TYPE_RUN],
-        config.POSITIVE_RUN_GAIN_THRESHOLD,
-    )
-
-
-def build_pass_efficiency(df: pd.DataFrame) -> List[FormationPlayEfficiency]:
-    """Pass plays only, success = gain >= POSITIVE_PASS_GAIN_THRESHOLD."""
-    if config.COL_PLAY_TYPE not in df.columns:
-        return []
-    return _formation_play_efficiency(
-        df[df[config.COL_PLAY_TYPE] == config.PLAY_TYPE_PASS],
-        config.POSITIVE_PASS_GAIN_THRESHOLD,
-    )
-
-
-def _formation_play_explosive_counts(df: pd.DataFrame, play_type: str, threshold: float) -> List[FormationPlayCount]:
-    """How many times each formation+play combo produced an explosive gain
-    of the given play type. Sorted by count, most explosive first."""
-    if (df.empty or config.COL_PLAY_TYPE not in df.columns
-            or config.COL_FORMATION not in df.columns or config.COL_PLAY_CALL not in df.columns
-            or config.COL_GAIN_LOSS not in df.columns):
-        return []
-
-    subset = df[(df[config.COL_PLAY_TYPE] == play_type) & (df[config.COL_GAIN_LOSS] >= threshold)]
-    if subset.empty:
-        return []
-
-    counts = subset.groupby([config.COL_FORMATION, config.COL_PLAY_CALL]).size()
-    results = [
-        FormationPlayCount(formation=formation, play_name=play_name, count=int(count))
-        for (formation, play_name), count in counts.items()
-    ]
-    return sorted(results, key=lambda r: -r.count)
-
-
-def build_explosive_runs_by_formation(df: pd.DataFrame) -> List[FormationPlayCount]:
-    return _formation_play_explosive_counts(df, config.PLAY_TYPE_RUN, config.EXPLOSIVE_RUN_THRESHOLD)
-
-
-def build_explosive_passes_by_formation(df: pd.DataFrame) -> List[FormationPlayCount]:
-    return _formation_play_explosive_counts(df, config.PLAY_TYPE_PASS, config.EXPLOSIVE_PASS_THRESHOLD)
-
-
-def build_red_zone_efficiency(df: pd.DataFrame) -> List[FormationPlayEfficiency]:
-    """Red zone = FIELD_ZONE in config.RED_ZONE_FIELD_ZONES (reuses the same
-    zone bucketing everything else in the report uses - no separate yard-
-    line check). Success = any positive gain. Runs and passes are combined,
-    matching how coaches actually review red-zone calls as one list."""
-    if "FIELD_ZONE" not in df.columns:
-        return []
-    subset = df[df["FIELD_ZONE"].isin(config.RED_ZONE_FIELD_ZONES)]
-    return _formation_play_efficiency(subset, success_gain_min=0.01)
-
-
-def _third_down_success(down: Optional[float], distance: Optional[float], gain: Optional[float]) -> bool:
-    """Short/medium (<= DIST_MEDIUM_MAX): success = converted the down.
-    Long: success = gained at least THIRD_DOWN_LONG_GAIN_PCT of what was
-    needed - a judgment call, not a strict conversion."""
-    if pd.isna(down) or int(down) != 3 or pd.isna(distance) or pd.isna(gain):
-        return False
-    if distance <= config.DIST_MEDIUM_MAX:
-        return gain >= distance
-    return gain >= distance * config.THIRD_DOWN_LONG_GAIN_PCT
-
-
-def build_third_down_efficiency(df: pd.DataFrame) -> List[FormationPlayEfficiency]:
-    """3rd down only, combined run+pass, using the long-down judgment rule
-    in _third_down_success rather than a flat gain threshold."""
-    if (df.empty or config.COL_DOWN not in df.columns or config.COL_DISTANCE not in df.columns
-            or config.COL_GAIN_LOSS not in df.columns):
-        return []
-
-    subset = df[pd.to_numeric(df[config.COL_DOWN], errors="coerce") == 3]
-    if subset.empty:
-        return []
-
-    results = []
-    for formation, play_name, group in _formation_play_groups(subset):
-        attempts = len(group)
-        successes = sum(
-            1 for _, row in group.iterrows()
-            if _third_down_success(row[config.COL_DOWN], row[config.COL_DISTANCE], row[config.COL_GAIN_LOSS])
-        )
-        results.append(FormationPlayEfficiency(
-            formation=formation,
-            play_name=play_name,
-            attempts=attempts,
-            successes=successes,
-            success_rate=round(successes / attempts * 100, 1) if attempts else 0.0,
-            avg_gain=round(group[config.COL_GAIN_LOSS].mean(), 1) if attempts else 0.0,
-        ))
-    return sorted(results, key=lambda r: (-r.successes, -r.attempts))
-
-
-# ---------------------------------------------------------------------------
-# Quick Defense View support (DEF ANALYSIS condensed report) - two small
-# additive helpers. No existing function pairs a play with its formation,
-# and no existing function distills scout-vs-live into one coach-friendly
-# verdict word, so those are the only two genuinely new pieces needed.
-# ---------------------------------------------------------------------------
-
-def most_common_formation(df: pd.DataFrame, play_type: str, play_name: str) -> str:
-    """Returns the formation this specific play is called from most often
-    within df (filtered to play_type and play_name). '—' if unknown."""
-    if (df.empty or config.COL_FORMATION not in df.columns
-            or config.COL_PLAY_CALL not in df.columns or config.COL_PLAY_TYPE not in df.columns):
-        return "—"
-    subset = df[(df[config.COL_PLAY_TYPE] == play_type) & (df[config.COL_PLAY_CALL] == play_name)]
-    if subset.empty:
-        return "—"
-    counts = subset[config.COL_FORMATION].value_counts()
-    return counts.index[0] if not counts.empty else "—"
-
-
-def build_scout_fidelity_verdict(
-    identity: IdentityComparison,
-    formation_changes: List[FormationChange],
-    run_changes: List[PlayChange],
-    pass_changes: List[PlayChange],
-) -> str:
-    """One coach-friendly word: are they doing what we scouted, or changing
-    things up? Reuses the exact same thresholds build_coach_alerts() already
-    uses (ALERT_RUNPASS_CHANGE_PCT, ALERT_FORMATION_CHANGE_PCT,
-    ALERT_PLAY_CHANGE_PCT, NEW_PLAY_MIN_LIVE_COUNT) - no new thresholds.
-    Checked in priority order: run/pass lean first (biggest-picture signal),
-    then formation usage, then individual play calls."""
-    if abs(identity.pass_pct_change) >= config.ALERT_RUNPASS_CHANGE_PCT:
-        return "LEANING MORE PASS" if identity.pass_pct_change > 0 else "LEANING MORE RUN"
-
-    if any(c.is_new and c.live_pct > 0 for c in formation_changes):
-        return "FORMATION CHANGE"
-    if any(not c.is_new and abs(c.change) >= config.ALERT_FORMATION_CHANGE_PCT for c in formation_changes):
-        return "FORMATION CHANGE"
-
-    play_changes = run_changes + pass_changes
-    if any(c.is_new and c.live_count >= config.NEW_PLAY_MIN_LIVE_COUNT for c in play_changes):
-        return "PLAY CALL CHANGE"
-    if any(not c.is_new and abs(c.change) >= config.ALERT_PLAY_CHANGE_PCT for c in play_changes):
-        return "PLAY CALL CHANGE"
-
-    return "TRUE TO SCOUT"
