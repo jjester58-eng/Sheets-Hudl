@@ -218,6 +218,12 @@ def format_report_layout(ws: gspread.Worksheet, total_rows: int, max_cols_letter
     - Bold, left-aligned text for Columns A and B identifiers (Formations & Plays side-by-side)
     - Center alignment for numerical metric values
     - Forces visible cell gridlines
+
+    Section banners are detected structurally (a row whose first cell is a
+    "===== TITLE =====" wrapper from reports._section_header) rather than by
+    a hardcoded keyword whitelist, so every section - including newer ones
+    like BALL CARRIER STATS, QB, and DEFENSE LIVE YARDS ALLOWED - gets the
+    same navy banner without this function needing to know section names.
     """
     if not ws or total_rows <= 0:
         return
@@ -269,10 +275,12 @@ def format_report_layout(ws: gspread.Worksheet, total_rows: int, max_cols_letter
     # 3. Row by row rule parser scanning for dynamic styling placements
     for idx, row in enumerate(all_values):
         row_num = idx + 1
+        first_cell = row[0].strip() if row else ""
         row_str = " ".join([str(cell) for cell in row]).upper()
 
-        # Check for Section Title Banner Rows
-        if "REPORT" in row_str or "PROFILE:" in row_str or "TENDENCIES" in row_str or "CHANGES" in row_str:
+        # Check for Section Title Banner Rows - any "===== TITLE =====" row
+        # produced by reports._section_header(), regardless of the title.
+        if first_cell.startswith("=====") and first_cell.endswith("====="):
             formats.append({
                 "range": f"A{row_num}:{max_cols_letter}{row_num}",
                 "format": blue_theme
