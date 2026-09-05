@@ -1,10 +1,6 @@
-"""
-stats.py
+"""stats.py
 --------
 Box-score/stat attribution from the ODK live sheet.
-
-ODK has no separate QB/Passer column. Passing attribution is inferred from
-PLAY TYPE + Result, while BALL CARRIER identifies the receiver or rusher.
 """
 
 import pandas as pd
@@ -30,7 +26,7 @@ def build_qb_stats(df: pd.DataFrame) -> QBStats:
     """Infer QB passing stats from PASS + Result.
 
     Attempts are Complete, Complete TD, Incomplete, and Interception.
-    Fumbles are never QB attempts.
+    Scrambles and sacks are excluded from passing attempts and passing yards.
     """
     clean = _clean(df)
     required = {config.COL_PLAY_TYPE, config.COL_RESULT, config.COL_GAIN_LOSS}
@@ -63,15 +59,8 @@ def build_qb_stats(df: pd.DataFrame) -> QBStats:
 def build_ball_carrier_stats(df: pd.DataFrame) -> list[BallCarrierStats]:
     """Build rushing, receiving and fumble stats from BALL CARRIER.
 
-    IMPORTANT FUMBLE RULE:
-    Every ODK Fumble with a BALL CARRIER is counted as ONE carry, regardless
-    of whether PLAY TYPE says RUN or PASS. Fumbles have zero rushing yards
-    and zero receiving yards. A fumble is never a QB attempt.
-
-    Normal plays:
-      RUN + Rush/Rush TD -> carry/rushing yards; Rush TD -> rushing TD.
-      PASS + Complete/Complete TD -> reception/receiving yards;
-          Complete TD -> receiving TD.
+    Scramble and Sack always count as rushing attempts and rushing yards for
+    the named BALL CARRIER, even when PLAY TYPE is PASS.
     """
     clean = _clean(df)
     required = {
@@ -99,6 +88,8 @@ def build_ball_carrier_stats(df: pd.DataFrame) -> list[BallCarrierStats]:
     pass_type = str(config.PLAY_TYPE_PASS).strip().lower()
     rush = _result(config.RESULT_RUSH)
     rush_td = _result(config.RESULT_RUSH_TD)
+    scramble = "scramble"
+    sack = "sack"
     complete = _result(config.RESULT_COMPLETE)
     complete_td = _result(config.RESULT_COMPLETE_TD)
     fumble = _result(config.RESULT_FUMBLE)
@@ -109,23 +100,25 @@ def build_ball_carrier_stats(df: pd.DataFrame) -> list[BallCarrierStats]:
         play_type = group["_play_type"]
         is_run = play_type == run_type
         is_pass = play_type == pass_type
+        is_scramble_or_sack = res.isin({scramble, sack})
         is_fumble = res == fumble
 
-        # EVERY fumble with a named BALL CARRIER is a carry.
-        # This intentionally does not depend on PLAY TYPE.
-        carries = int((is_run & res.isin({rush, rush_td})).sum() + is_fumble.sum())
+        normal_rush = is_run & res.isin({rush, rush_td})
+        rushing_plays = normal_rush | is_scramble_or_sack
 
-        # Fumble yards are always zero, even if GN/LS happens to contain a value.
-        rush_yards = float(
-            group.loc[is_run & res.isin({rush, rush_td}), "_yards"].sum()
-        )
+        # Every fumble with a named BALL CARRIER is also counted as one carry.
+        carries = int(rushing_plays.sum() + is_fumble.sum())
+        rush_yards = float(group.loc[rushing_plays, "_yards"].sum())
         rush_tds = int((is_run & (res == rush_td)).sum())
 
-        receptions = int((is_pass & res.isin({complete, complete_td})).sum())
-        rec_yards = float(
-            group.loc[is_pass & res.isin({complete, complete_td}), "_yards"].sum()
+        receiving_plays = (
+            is_pass
+            & ~is_scramble_or_sack
+            & res.isin({complete, complete_td})
         )
-        rec_tds = int((is_pass & (res == complete_td)).sum())
+        receptions = int(receiving_plays.sum())
+        rec_yards = float(group.loc[receiving_plays, "_yards"].sum())
+        rec_tds = int((receiving_plays & (res == complete_td)).sum())
         fumbles = int(is_fumble.sum())
 
         players.append(BallCarrierStats(
@@ -144,17 +137,34 @@ def build_ball_carrier_stats(df: pd.DataFrame) -> list[BallCarrierStats]:
 
 
 def build_def_live_yards(df: pd.DataFrame) -> PlayTypeYards:
-    """Opponent live offensive yards on D rows; fumbles add zero yards."""
+    """Opponent live offensive yards.
+
+    Scrambles and sacks are classified as rushing yards regardless of PLAY TYPE.
+    Fumbles add zero yards.
+    """
     clean = _clean(df)
-    required = {config.COL_PLAY_TYPE, config.COL_GAIN_LOSS}
+    required = {config.COL_PLAY_TYPE, config.COL_RESULT, config.COL_GAIN_LOSS}
     if clean.empty or not required.issubset(clean.columns):
         return PlayTypeYards(0.0, 0.0)
 
     work = clean.copy()
     work["_result"] = work[config.COL_RESULT].map(_result)
+    work["_play_type"] = work[config.COL_PLAY_TYPE].astype(str).str.strip().str.lower()
     work["_yards"] = pd.to_numeric(work[config.COL_GAIN_LOSS], errors="coerce").fillna(0)
-    work.loc[work["_result"] == _result(config.RESULT_FUMBLE), "_yards"] = 0.0
 
-    rushing = float(work.loc[work[config.COL_PLAY_TYPE] == config.PLAY_TYPE_RUN, "_yards"].sum())
-    passing = float(work.loc[work[config.COL_PLAY_TYPE] == config.PLAY_TYPE_PASS, "_yards"].sum())
+    fumble = _result(config.RESULT_FUMBLE)
+    work.loc[work["_result"] == fumble, "_yards"] = 0.0
+
+    run_type = str(config.PLAY_TYPE_RUN).strip().lower()
+    pass_type = str(config.PLAY_TYPE_PASS).strip().lower()
+    is_scramble_or_sack = work["_result"].isin({"scramble", "sack"})
+
+    rushing_mask = (work["_play_type"] == run_type) | is_scramble_or_sack
+    passing_mask = (
+        (work["_play_type"] == pass_type)
+        & ~is_scramble_or_sack
+    )
+
+    rushing = float(work.loc[rushing_mask, "_yards"].sum())
+    passing = float(work.loc[passing_mask, "_yards"].sum())
     return PlayTypeYards(rushing, passing)
