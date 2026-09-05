@@ -178,11 +178,40 @@ def load_offense_live_df(spreadsheet: gspread.Spreadsheet) -> pd.DataFrame:
     return filter_odk_by_side(df, config.SIDE_OFFENSE)
 
 
+def _reset_report_formatting(ws: gspread.Worksheet) -> None:
+    """Resets the report tab's visible cell formatting before every rebuild.
+
+    ws.clear() removes values but does not remove existing cell formatting.
+    That allowed old navy banners, gray headers, and trend colors to survive
+    into later reports. Reset the whole worksheet's cell presentation first,
+    then format the freshly written report from scratch.
+    """
+    reset_format = {
+        "backgroundColor": {"red": 1.0, "green": 1.0, "blue": 1.0},
+        "textFormat": {
+            "foregroundColor": {"red": 0.0, "green": 0.0, "blue": 0.0},
+            "bold": False,
+            "italic": False,
+            "fontSize": 10,
+        },
+        "horizontalAlignment": "LEFT",
+        "verticalAlignment": "BOTTOM",
+        "wrapStrategy": "OVERFLOW_CELL",
+    }
+    ws.batch_format([{
+        "range": f"A1:{gspread.utils.rowcol_to_a1(ws.row_count, ws.col_count)}",
+        "format": reset_format,
+    }])
+    print(f"Reset existing formatting on '{ws.title}'")
+
+
 def write_report(spreadsheet: gspread.Spreadsheet, rows: List[List[str]],
                   sheet_name: str = config.OUTPUT_SHEET_NAME) -> gspread.Worksheet:
     """Clears (or creates) the given output tab and writes the report
-    starting at A1. Every row is padded to the same width so the write is a
-    clean rectangle. Returns the worksheet object for further formatting."""
+    starting at A1. Existing cell colors and basic text/alignment formatting
+    are reset before the new report is populated so old styling cannot bleed
+    into the new report. Every row is padded to the same width so the write is
+    a clean rectangle. Returns the worksheet object for further formatting."""
     print(f"write_report: {len(rows)} rows -> '{sheet_name}'")
     if not rows:
         print("ERROR: 0 rows — not clearing tab.")
@@ -191,6 +220,7 @@ def write_report(spreadsheet: gspread.Spreadsheet, rows: List[List[str]],
     try:
         ws = spreadsheet.worksheet(sheet_name)
         ws.clear()
+        _reset_report_formatting(ws)
         print(f"Cleared existing '{sheet_name}' tab")
     except gspread.exceptions.WorksheetNotFound:
         # Expanded to 12 columns (A-L) to naturally accommodate side-by-side splits
