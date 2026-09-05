@@ -237,7 +237,11 @@ def format_report_layout(ws: gspread.Worksheet, total_rows: int, max_cols_letter
     # and the Sheets API rejects the request outright.
     blue_theme = {
         "backgroundColor": {"red": 0.04, "green": 0.22, "blue": 0.42},
-        "textFormat": {"foregroundColor": {"red": 1.0, "green": 1.0, "blue": 1.0}, "bold": True, "fontSize": 11},
+        "textFormat": {
+            "foregroundColor": {"red": 1.0, "green": 1.0, "blue": 1.0},
+            "bold": True,
+            "fontSize": 11,
+        },
         "horizontalAlignment": "LEFT"
     }
 
@@ -258,6 +262,7 @@ def format_report_layout(ws: gspread.Worksheet, total_rows: int, max_cols_letter
 
     all_values = ws.get_all_values()
     formats = []
+    navy_ranges = []
 
     # 1. Default font size across the whole written range (was a bogus
     # ws.update_configuration() call - not a real gspread method).
@@ -285,6 +290,7 @@ def format_report_layout(ws: gspread.Worksheet, total_rows: int, max_cols_letter
                 "range": f"A{row_num}:{max_cols_letter}{row_num}",
                 "format": blue_theme
             })
+            navy_ranges.append(f"A{row_num}:{max_cols_letter}{row_num}")
 
         # Check for Metric Table Sub-headers (Now covers A and B keys too)
         elif "SNAPS" in row_str or "RUN %" in row_str:
@@ -304,6 +310,23 @@ def format_report_layout(ws: gspread.Worksheet, total_rows: int, max_cols_letter
 
     if formats:
         ws.batch_format(formats)
+
+    # Re-apply banner text as white in a final pass. This is intentional:
+    # existing Google Sheets formatting can survive ws.clear(), and a later
+    # formatting operation or previously styled row can otherwise leave dark
+    # text on the navy banner. The final pass guarantees readable white text.
+    if navy_ranges:
+        white_banner_text = {
+            "textFormat": {
+                "foregroundColor": {"red": 1.0, "green": 1.0, "blue": 1.0},
+                "bold": True,
+                "fontSize": 11,
+            }
+        }
+        ws.batch_format([
+            {"range": cell_range, "format": white_banner_text}
+            for cell_range in navy_ranges
+        ])
 
     ws.show_gridlines()
     print("Report layout styling successfully drawn.")
