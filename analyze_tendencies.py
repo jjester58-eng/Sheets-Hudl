@@ -5,7 +5,6 @@ Orchestrator for tendency analysis.
 """
 
 import sys
-import pandas as pd
 import analysis
 import config
 import reports
@@ -155,57 +154,17 @@ def _write_offense_report(spreadsheet, off_live_df, off_ready: bool) -> None:
     print("OFF ANALYSIS written and formatted.")
 
 
-def _penalty_stats(df: pd.DataFrame) -> tuple[int, float]:
-    """Return penalty count and penalty yard impact for one ODK side.
-
-    ODK=O represents our offense and ODK=D represents our defense.
-    GN/LS may be negative for offensive penalties and positive for defensive
-    penalties, so penalty impact is normalized to a negative value here.
-    """
-    if df.empty or config.COL_RESULT not in df.columns or config.COL_GAIN_LOSS not in df.columns:
-        return 0, 0.0
-
-    result = df[config.COL_RESULT].fillna("").astype(str).str.strip().str.lower()
-    penalty_mask = result == "penalty"
-    count = int(penalty_mask.sum())
-    if count == 0:
-        return 0, 0.0
-
-    yards = pd.to_numeric(df.loc[penalty_mask, config.COL_GAIN_LOSS], errors="coerce").fillna(0)
-    penalty_yards = -float(yards.abs().sum())
-    return count, penalty_yards
-
-
 def _write_stats_report(spreadsheet, off_live_df, off_ready: bool, live_df, live_ready: bool) -> None:
     print("Building Stats tab...")
 
     qb_stats = analysis.build_qb_stats(off_live_df) if off_ready else analysis.QBStats(0, 0, 0.0, 0.0, 0, 0)
     ball_carrier_stats = analysis.build_ball_carrier_stats(off_live_df) if off_ready else []
-
-    # Penalties are kept separate from rushing/passing yardage. ODK side
-    # already tells us whether the penalty belongs to our offense or defense.
-    off_penalty_count, off_penalty_yards = _penalty_stats(off_live_df)
-    def_penalty_count, def_penalty_yards = _penalty_stats(live_df)
-
-    # Never let penalty GN/LS values become rushing or passing yards.
-    def_live_yards = (
-        analysis.build_play_type_yards(
-            live_df.loc[
-                ~live_df[config.COL_RESULT].fillna("").astype(str).str.strip().str.lower().eq("penalty")
-            ]
-        )
-        if live_ready and config.COL_RESULT in live_df.columns
-        else analysis.PlayTypeYards(0.0, 0.0)
-    )
+    def_live_yards = analysis.build_play_type_yards(live_df) if live_ready else analysis.PlayTypeYards(0.0, 0.0)
 
     report_rows = reports.build_stats_report(
         qb_stats=qb_stats,
         ball_carrier_stats=ball_carrier_stats,
         def_live_yards=def_live_yards,
-        off_penalty_count=off_penalty_count,
-        off_penalty_yards=off_penalty_yards,
-        def_penalty_count=def_penalty_count,
-        def_penalty_yards=def_penalty_yards,
     )
 
     ws = sheets.write_report(spreadsheet, report_rows, sheet_name=config.STATS_OUTPUT_SHEET_NAME)
