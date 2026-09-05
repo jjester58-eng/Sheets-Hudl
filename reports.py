@@ -207,15 +207,11 @@ def build_stats_team_section(qb: QBStats, ball_carriers: List[BallCarrierStats])
     rush_attempts = sum(s.carries for s in ball_carriers)
     rush_yards = sum(s.rush_yards for s in ball_carriers)
     rush_tds = sum(s.rush_td for s in ball_carriers)
-    total_plays = rush_attempts + qb.attempts
-    total_yards = rush_yards + qb.pass_yards
-    total_tds = rush_tds + qb.pass_td
 
     rows = [_section_header("TEAM OFFENSE")]
     rows.append(["Category", "Att", "Yds", "Avg", "TD"])
     rows.append(["Rushing", str(rush_attempts), _yards(rush_yards), f"{rush_yards / rush_attempts:.1f}" if rush_attempts else "0.0", str(rush_tds)])
     rows.append(["Passing", f"{qb.completions}/{qb.attempts}", _yards(qb.pass_yards), f"{qb.pass_yards / qb.completions:.1f}" if qb.completions else "0.0", str(qb.pass_td)])
-    rows.append(["TOTAL OFFENSE", str(total_plays), _yards(total_yards), f"{total_yards / total_plays:.1f}" if total_plays else "0.0", str(total_tds)])
     rows.append(_blank_row())
     return rows
 
