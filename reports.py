@@ -260,44 +260,11 @@ def build_stats_team_defense_section(live_yards: PlayTypeYards) -> List[Row]:
     return rows
 
 
-def build_stats_penalty_section(
-    off_penalty_count: int,
-    off_penalty_yards: float,
-    def_penalty_count: int,
-    def_penalty_yards: float,
-) -> List[Row]:
-    """Show only our offense and our defense penalties."""
-    total_count = off_penalty_count + def_penalty_count
-    total_yards = off_penalty_yards + def_penalty_yards
-
-    rows = [_section_header("PENALTIES")]
-    rows.append(["Unit", "Penalties", "Yds"])
-    rows.append(["Offense", str(off_penalty_count), _yards(off_penalty_yards)])
-    rows.append(["Defense", str(def_penalty_count), _yards(def_penalty_yards)])
-    rows.append(["Total", str(total_count), _yards(total_yards)])
-    rows.append(_blank_row())
-    return rows
-
-
-def build_stats_report(
-    qb_stats: QBStats,
-    ball_carrier_stats: List[BallCarrierStats],
-    def_live_yards: PlayTypeYards,
-    off_penalty_count: int = 0,
-    off_penalty_yards: float = 0.0,
-    def_penalty_count: int = 0,
-    def_penalty_yards: float = 0.0,
-) -> List[Row]:
+def build_stats_report(qb_stats: QBStats, ball_carrier_stats: List[BallCarrierStats], def_live_yards: PlayTypeYards) -> List[Row]:
     rows = []
     rows += build_stats_team_section(qb_stats, ball_carrier_stats)
     rows += build_stats_passing_section(qb_stats)
     rows += build_stats_rushing_section(ball_carrier_stats)
     rows += build_stats_receiving_section(ball_carrier_stats)
     rows += build_stats_team_defense_section(def_live_yards)
-    rows += build_stats_penalty_section(
-        off_penalty_count=off_penalty_count,
-        off_penalty_yards=off_penalty_yards,
-        def_penalty_count=def_penalty_count,
-        def_penalty_yards=def_penalty_yards,
-    )
     return rows
