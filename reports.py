@@ -13,10 +13,10 @@ from analysis import (
 )
 
 Row = List[str]
-UP = "\u25b2"
-DOWN = "\u25bc"
-CHECK = "\u2713"
-WARN = "\u26a0"
+UP = "▲"
+DOWN = "▼"
+CHECK = "✓"
+WARN = "⚠"
 
 
 def _blank_row() -> Row:
@@ -207,11 +207,13 @@ def build_stats_team_section(qb: QBStats, ball_carriers: List[BallCarrierStats])
     rush_attempts = sum(s.carries for s in ball_carriers)
     rush_yards = sum(s.rush_yards for s in ball_carriers)
     rush_tds = sum(s.rush_td for s in ball_carriers)
+    total_offense_yards = rush_yards + qb.pass_yards
 
     rows = [_section_header("TEAM OFFENSE")]
     rows.append(["Category", "Att", "Yds", "Avg", "TD"])
     rows.append(["Rushing", str(rush_attempts), _yards(rush_yards), f"{rush_yards / rush_attempts:.1f}" if rush_attempts else "0.0", str(rush_tds)])
     rows.append(["Passing", f"{qb.completions}/{qb.attempts}", _yards(qb.pass_yards), f"{qb.pass_yards / qb.completions:.1f}" if qb.completions else "0.0", str(qb.pass_td)])
+    rows.append(["Total Offense", "", _yards(total_offense_yards), "", ""])
     rows.append(_blank_row())
     return rows
 
