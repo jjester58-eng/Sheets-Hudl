@@ -123,27 +123,27 @@ def _write_offense_report(spreadsheet, off_live_df, off_ready: bool) -> None:
 
     if not off_ready:
         print("WARNING: No offensive snaps found in ODK for OFF ANALYSIS.")
-        return
+        report_rows = [["No offensive data found in ODK."]]
+    else:
+        summary = analysis.build_summary(off_live_df)
+        formations = analysis.build_top_formations(off_live_df, top_n=config.TOP_N_FORMATIONS * 2)
+        top_runs = analysis.build_top_plays(off_live_df, config.PLAY_TYPE_RUN, top_n=config.TOP_N_PLAYS * 2)
+        top_passes = analysis.build_top_plays(off_live_df, config.PLAY_TYPE_PASS, top_n=config.TOP_N_PLAYS * 2)
+        down_distance_summary = analysis.build_down_distance_summary(off_live_df)
+        field_zone_summary = analysis.build_field_zone_summary(off_live_df)
+        field_position_available = analysis.has_field_position_data(off_live_df)
+        explosive = analysis.build_explosive_report(off_live_df, top_n=config.TOP_N_PLAYS * 2)
 
-    summary = analysis.build_summary(off_live_df)
-    formations = analysis.build_top_formations(off_live_df, top_n=config.TOP_N_FORMATIONS * 2)
-    top_runs = analysis.build_top_plays(off_live_df, config.PLAY_TYPE_RUN, top_n=config.TOP_N_PLAYS * 2)
-    top_passes = analysis.build_top_plays(off_live_df, config.PLAY_TYPE_PASS, top_n=config.TOP_N_PLAYS * 2)
-    down_distance_summary = analysis.build_down_distance_summary(off_live_df)
-    field_zone_summary = analysis.build_field_zone_summary(off_live_df)
-    field_position_available = analysis.has_field_position_data(off_live_df)
-    explosive = analysis.build_explosive_report(off_live_df, top_n=config.TOP_N_PLAYS * 2)
-
-    report_rows = reports.build_offense_report(
-        summary=summary,
-        formations=formations,
-        top_runs=top_runs,
-        top_passes=top_passes,
-        down_distance_summary=down_distance_summary,
-        field_zone_summary=field_zone_summary,
-        field_position_available=field_position_available,
-        explosive=explosive,
-    )
+        report_rows = reports.build_offense_report(
+            summary=summary,
+            formations=formations,
+            top_runs=top_runs,
+            top_passes=top_passes,
+            down_distance_summary=down_distance_summary,
+            field_zone_summary=field_zone_summary,
+            field_position_available=field_position_available,
+            explosive=explosive,
+        )
 
     ws = sheets.write_report(spreadsheet, report_rows, sheet_name=config.OFF_OUTPUT_SHEET_NAME)
     if ws is None:
